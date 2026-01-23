@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+
+# data.py
+import random
+import math
+from dataclasses import dataclass, field
+from typing import List, Tuple
+from graph_utils import route_metrics
+#from graph_utils import route_metrics
+
+@dataclass
+class Request:
+	id: int
+	pickup: Tuple[float, float]
+	dropoff: Tuple[float, float]
+	arrival_time: float
+	time_window: Tuple[float, float]
+	max_ride_time: float
+	demand: int = 1
+	
+	
+@dataclass
+class Vehicle:
+	id: int
+	location: Tuple[float, float]
+	schedule: List[Request] = field(default_factory=list)
+	capacity: int = 3
+	battery_capacity: float = 15.0
+	charge_level: float = 15.0
+	busy_until: float = 0.0
+	
+	
+@dataclass
+class ChargingStation:
+	id: int
+	location: Tuple[float, float]
+	charging_rate: float = 0.05
+	
+	
+def euclidean_distance(p1, p2):
+	return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+
+
+def travel_time(u, v, G, phi=0.01, t_service=0):
+	travelTime, travelDistance = route_metrics(G, u, v)
+	return travelTime
+
+
+def energy_cost(u, v, beta=0.0005):
+	return beta * euclidean_distance(u, v)
+
+def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, time_horizon=1440, n_chargingStations = 3, seed=42, simulator=None, norming_policy = None):
+	random.seed(seed)
+	instances = []
+	nodes = [n for n, d in graph.nodes(data=True) if d.get("building")]
+	for i in range(n_instances):
+		requests = []
+		for r in range(n_requests):
+			startNode, destinationNode = random.sample(nodes, 2)
+			arrival_time = random.uniform(0, time_horizon - 180)
+			tstart = arrival_time
+			tend = arrival_time + 15
+			max_ride_time = travel_time(u = startNode, v = destinationNode, G = graph) * 2
+			requests.append(Request(
+				id=r,
+				pickup=startNode,
+				dropoff=destinationNode,
+				arrival_time=arrival_time,
+				time_window=(tstart, tend),
+				max_ride_time=max_ride_time
+			))
+			
+		vehicles = [
+			Vehicle(id=k, location=random.choice(nodes))
+			for k in range(n_vehicles)
+		]
+		
+		stations = [
+			ChargingStation(id=s, location=random.sample(nodes, n_chargingStations)[s])
+			for s in range(n_chargingStations)
+		]
+		instance = {
+			'requests': requests,
+			'vehicles': vehicles,
+			'stations': stations
+		}
+		if simulator and norming_policy:
+			print(f"Running instance with {norming_policy} for score to norm against.")
+			norm_score = simulator.run(instance=instance, policy_pair=norming_policy, graph=graph)
+			instance['normscore']=norm_score
+		instances.append(instance)
+	return instances
