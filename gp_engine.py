@@ -32,12 +32,12 @@ class GPIndividual:
 	
 	
 class GPEngine:
-	def __init__(self, graph, simulator, train_instances, val_instances, logger = utils.Logger()):
+	def __init__(self, travel_times, simulator, train_instances, val_instances, logger = utils.Logger()):
 		self.logger = logger
 		self.simulator = simulator
 		self.train_instances = train_instances
 		self.val_instances = val_instances
-		self.graph = graph
+		self.travel_times = travel_times
 		self.population_size = 50
 		self.elite_size = 1
 		self.tournament_size = 5
@@ -58,7 +58,7 @@ class GPEngine:
 			evaluate_population_parallel(
                 population=population,
                 simulator=self.simulator,
-                graph=self.graph,
+                travel_times=self.travel_times,
                 instances=self.train_instances,
                 max_workers=max_workers,
                 chunksize=1,  # with 50 inds, 1 is fine; can try 2-5 later
@@ -111,7 +111,7 @@ class GPEngine:
 	def evaluate(self, individual, instances, normalise=False):
 		total = 0
 		for inst in instances:
-			score = self.simulator.run(inst, (individual.veh_policy, individual.req_policy), graph=self.graph)
+			score = self.simulator.run(inst, (individual.veh_policy, individual.req_policy), travel_times=self.travel_times)
 			total += score
 		return total / len(instances)
 	

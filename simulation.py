@@ -31,7 +31,7 @@ class Event:
 
 @dataclass
 class State:
-    graph: Any
+    travel_times: Any
     fleet: Dict[int, Vehicle]                 # vehicle_id -> Vehicle (expects: .id, .node, .charge_level, .capacity, .busy_until)
     requests: Dict[int, Request]              # request_id -> Request (expects: .id, .pickup_node, .dropoff_node, .arrival_time, .time_window)
     stations: List[Any]                   # list of charging stations (expects: .id, .node)
@@ -54,7 +54,8 @@ class State:
 
 class Simulator:
     def __init__(self,
-      graph,
+                travel_times,
+                travel_distances,
                  service_time_pickup: float = 0.0,
                  service_time_dropoff: float = 0.0,
                  beta_energy_per_m: float = 0.0002,  # energy per meter
@@ -65,19 +66,20 @@ class Simulator:
         self.beta = beta_energy_per_m
         self.pen_late = penalty_weight_late
         self.log = log  # optional Logger with .log(...)
-        self.graph = graph
+        self.travel_times = travel_times
+        self.travel_distances = travel_distances
 
     # -------------------------
     # Public entry point
     # -------------------------
-    def run(self, instance: Dict[str, Any], policy_pair: Tuple[List[str], List[str]], graph) -> float:
+    def run(self, instance: Dict[str, Any], policy_pair: Tuple[List[str], List[str]], travel_times) -> float:
         """
         instance must contain:
           - 'requests': List[Request] with attributes (id, pickup_node, dropoff_node, arrival_time, time_window)
           - 'vehicles': List[Vehicle] with attributes (id, node, charge_level, capacity)
           - 'stations': List[ChargingStation] with attribute (node)
         policy_pair = (veh_policy, req_policy)
-        graph = NetworkX MultiDiGraph (OSMnx) with 'travel_time' on edges
+        travel_times = NetworkX MultiDiGraph (OSMnx) with 'travel_time' on edges
         Returns objective value = total_travel_time + penalty_weight_late * pickup_lateness
         """
         # Deepcopy to avoid external mutation
@@ -90,7 +92,7 @@ class Simulator:
             if not hasattr(v, 'busy_until'):
                 v.busy_until = 0.0
 
-        S = State(graph=graph, fleet=fleet, requests=reqs, stations=stations)
+        S = State(travel_times=travel_times, fleet=fleet, requests=reqs, stations=stations)
 
         # Seed event queue with request arrivals
         for r in S.requests.values():
@@ -167,8 +169,10 @@ class Simulator:
         v = S.fleet[vid]
         now = S.time if start_time is None else start_time
 
-        t_to_pu, d_to_pu = route_metrics(S.graph, v.location, req.pickup)
-        t_pu_do, d_pu_do = route_metrics(S.graph, req.pickup, req.dropoff)
+        t_to_pu = self.travel_times[(v.location, req.pickup)]
+        d_to_pu = self.travel_distances[(v.location, req.pickup)]
+        t_pu_do = self.travel_times[(req.pickup, req.dropoff)]
+        d_pu_do = self.travel_distances[(req.pickup, req.dropoff)]
 
         # Pickup can only start after arriving to pickup and not before earliest window
         start_service = max(now + t_to_pu, float(req.time_window[0]))
@@ -205,7 +209,7 @@ class Simulator:
                 continue
             score = evaluate_policy_ast(
                 veh_policy,
-                graph=self.graph,
+                travel_times=self.travel_times,
                 vehicle=v,
                 request=req,
                 requests=S.requests,
@@ -225,7 +229,7 @@ class Simulator:
             r = S.requests[rid]
             score = evaluate_policy_ast(
                 req_policy,
-                graph=self.graph,
+                travel_times=self.travel_times,
                 vehicle=v,
                 request=r,
                 requests=S.requests,
