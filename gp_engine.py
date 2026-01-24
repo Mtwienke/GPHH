@@ -32,19 +32,19 @@ class GPIndividual:
 	
 	
 class GPEngine:
-	def __init__(self, travel_times, simulator, train_instances, val_instances, logger = utils.Logger()):
+	def __init__(self, travel_metrics, simulator, train_instances, val_instances, logger = utils.Logger()):
 		self.logger = logger
 		self.simulator = simulator
 		self.train_instances = train_instances
 		self.val_instances = val_instances
-		self.travel_times = travel_times
+		self.travel_metrics = travel_metrics
 		self.population_size = 50
 		self.elite_size = 1
 		self.tournament_size = 5
 		self.crossover_rate = 0.8
 		self.mutation_rate = 0.2
 		
-	def train(self, n_generations=20, max_workers=None):
+	def train(self, n_generations=20, max_workers=2):
 		population = [GPIndividual() for _ in range(self.population_size)]
 		self.logger.log(f"[Init] Created {len(population)} individuals.")
 		for i, ind in enumerate(population):
@@ -58,7 +58,7 @@ class GPEngine:
 			evaluate_population_parallel(
                 population=population,
                 simulator=self.simulator,
-                travel_times=self.travel_times,
+                travel_metrics=self.travel_metrics,
                 instances=self.train_instances,
                 max_workers=max_workers,
                 chunksize=1,  # with 50 inds, 1 is fine; can try 2-5 later
@@ -111,7 +111,7 @@ class GPEngine:
 	def evaluate(self, individual, instances, normalise=False):
 		total = 0
 		for inst in instances:
-			score = self.simulator.run(inst, (individual.veh_policy, individual.req_policy), travel_times=self.travel_times)
+			score = self.simulator.run(inst, (individual.veh_policy, individual.req_policy), travel_metrics=self.travel_metrics)
 			total += score
 		return total / len(instances)
 	

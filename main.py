@@ -10,6 +10,7 @@ import numpy as np
 from GraphManager import GraphManager
 from datetime import datetime
 from terminals import generate_norming_policy
+from travel_metrics import travel_metrics
 
 def set_seed(seed=42):
 	random.seed(seed)
@@ -27,22 +28,23 @@ def main():
 	norming_policy = generate_norming_policy ()
 	# Generate training/validation/test instances
 	print("generating instances")
-	train_instances = generate_instances(graph = G, n_instances=5, n_requests=100, n_vehicles=10)
-	val_instances = generate_instances(graph = G, n_instances=5, n_requests=100, n_vehicles=10)
-	test_instances = generate_instances(graph = G, n_instances=5, n_requests=100, n_vehicles=10)
+	train_instances = generate_instances(graph = G, n_instances=5, n_requests=500, n_vehicles=50)
+	val_instances = generate_instances(graph = G, n_instances=5, n_requests=500, n_vehicles=50)
+	test_instances = generate_instances(graph = G, n_instances=5, n_requests=500, n_vehicles=50)
 	
 	print("generating a cache for travel_times")
 	# Initialize and train the GP engine
 	instances = train_instances + val_instances + test_instances
-	travel_times, travel_distances = manager.build_tt_cache(instances=instances)
-	print(f"cache created with {len(travel_times)} nodes")
+	tm = travel_metrics()
+	tm.build_dense_tt_td(G, instances)
+	print(f"cache created with {len(tm.node_to_idx)} nodes")
  
-	sim = Simulator(log=None, travel_times=travel_times, travel_distances=travel_distances)
+	sim = Simulator(log=None, travel_metrics=tm)
 	for set in train_instances, val_instances, test_instances:
 		for instance in set:
-			norm_score=sim.run(instance=instance, policy_pair=norming_policy,travel_times=travel_times)
+			norm_score=sim.run(instance=instance, policy_pair=norming_policy,travel_metrics=tm)
 			instance['normscore']=norm_score
-	gp = GPEngine(simulator=sim, train_instances=train_instances, val_instances=val_instances, logger=logger, travel_times = travel_times)
+	gp = GPEngine(simulator=sim, train_instances=train_instances, val_instances=val_instances, logger=logger, travel_metrics=tm)
 	best_individual = gp.train(n_generations=100)
 	
 	logger.log("\n--- Testing Best Individual ---")

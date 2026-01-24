@@ -9,6 +9,7 @@ import math
 from data import travel_time, energy_cost, euclidean_distance, Vehicle, Request
 import utils
 import traceback
+from travel_metrics import travel_metrics
 
 # Protected division
 def protected_div(x, y):
@@ -27,20 +28,20 @@ FUNCTIONS = {
 	'max': max,
 }
 
-def TVPU(v, r, travel_times, **kwargs):
-    return travel_times[(v.location, r.pickup)]
+def TVPU(v, r, travel_metrics, **kwargs):
+    return travel_metrics.get_time(v.location, r.pickup)
 
-def COST(v, r, travel_times, **kwargs):
-    return travel_times[(v.location, r.pickup)]+ travel_times[(r.pickup, r.dropoff)]
+def COST(v, r, travel_metrics, **kwargs):
+    return travel_metrics.get_time(v.location, r.pickup) + travel_metrics.get_time(r.pickup, r.dropoff)
 
-def DEM(v, r, travel_times, **kwargs):
-    return travel_times[(v.location, r.pickup)] + travel_times[(r.pickup, r.dropoff)]
+def DEM(v, r, travel_metrics, **kwargs):
+    return travel_metrics.get_time(v.location, r.pickup) + travel_metrics.get_time(r.pickup, r.dropoff)
     
-def DUR(v, r, travel_times, **kwargs):
-    return travel_times[(r.pickup, r.dropoff)]
+def DUR(v, r, travel_metrics, **kwargs):
+    return travel_metrics.get_time(r.pickup, r.dropoff)
     
-def SLACK(v, r, travel_times, t= None, **kwargs):
-    return max(r.time_window[1] - t - travel_times[(v.location, r.pickup)], 0)
+def SLACK(v, r, travel_metrics, t= None, **kwargs):
+    return max(r.time_window[1] - t - travel_metrics.get_time(v.location, r.pickup), 0)
     
 def CAP(v, r, **kwargs):
     return v.capacity
@@ -48,13 +49,13 @@ def CAP(v, r, **kwargs):
 def RT(v, r, **kwargs):
     return v.charge_level
 
-def TVC(v, r, travel_times, stations=None, **kwargs):
-    return min([travel_times[(v.location, s.location)] for s in stations])
+def TVC(v, r, travel_metrics, stations=None, **kwargs):
+    return min(travel_metrics.get_time(v.location, s.location) for s in stations)
     
 def AR(requests=None, **kwargs):
     return sum(requests)
 
-def OBV(v, r, vehicles, travel_times, t=None, **kwargs):
+def OBV(v, r, vehicles, travel_metrics, t=None, **kwargs):
     if t is None:
         raise ValueError("OBV needs current time t")
 
@@ -67,7 +68,7 @@ def OBV(v, r, vehicles, travel_times, t=None, **kwargs):
         available = max(t, veh.busy_until)
 
         # Fahrzeit zum Pickup (oder r.location, je nach Modell)
-        tt = travel_times[(veh.location, r.pickup)]
+        tt = travel_metrics.get_time(veh.location, r.pickup)
 
         # Wartezeit = busy-wait + anfahrtszeit
         wait = (available - t) + tt
@@ -77,7 +78,7 @@ def OBV(v, r, vehicles, travel_times, t=None, **kwargs):
 
     return best
      
-def LCT(v, r, vehicles, travel_times, t=None, **kwargs):
+def LCT(v, r, vehicles, travel_metrics, t=None, **kwargs):
     if t is None:
         raise ValueError("OBV needs current time t")
 
@@ -88,7 +89,7 @@ def LCT(v, r, vehicles, travel_times, t=None, **kwargs):
         available = max(t, veh.busy_until)
 
         # Fahrzeit zum Pickup (oder r.location, je nach Modell)
-        tt = travel_times[(veh.location, r.pickup)]
+        tt = travel_metrics.get_time(veh.location, r.pickup)
 
         # Wartezeit = busy-wait + anfahrtszeit
         wait = available + tt
@@ -100,7 +101,7 @@ def LCT(v, r, vehicles, travel_times, t=None, **kwargs):
     
     return time_left
 
-def CRDV(v, r, vehicles, travel_times, radius_sec=300, **kwargs):
+def CRDV(v, r, vehicles, travel_metrics, radius_sec=300, **kwargs):
     """Count other vehicles within radius_sec travel time from v.location."""
     if vehicles is None:
         return 0
@@ -109,12 +110,12 @@ def CRDV(v, r, vehicles, travel_times, radius_sec=300, **kwargs):
     for v2 in vehicles.values():
         if v2 is v:
             continue
-        tt = travel_times[(v.location, v2.location)]
+        tt = travel_metrics.get_time(v.location, v2.location)
         if tt <= radius_sec:
             count += 1
     return count
 
-def CRPP(v, r, requests, travel_times, radius_sec=300, **kwargs):
+def CRPP(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
     """Count other requests whose pickup is within radius_sec travel time from r.pickup."""
     if requests is None:
         return 0
@@ -123,12 +124,12 @@ def CRPP(v, r, requests, travel_times, radius_sec=300, **kwargs):
     for r2 in requests.values():
         if r2 is r:
             continue
-        tt = travel_times[(r.pickup, r2.pickup)]
+        tt = travel_metrics.get_time(r.pickup, r2.pickup)
         if tt <= radius_sec:
             count += 1
     return count
     
-def CRPD(v, r, requests, travel_times, radius_sec=300, **kwargs):
+def CRPD(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
     """Count other requests whose pickup is within radius_sec travel time from r.pickup."""
     if requests is None:
         return 0
@@ -137,12 +138,12 @@ def CRPD(v, r, requests, travel_times, radius_sec=300, **kwargs):
     for r2 in requests.values():
         if r2 is r:
             continue
-        tt = travel_times[(r.pickup, r2.dropoff)]
+        tt = travel_metrics.get_time(r.pickup, r2.dropoff)
         if tt <= radius_sec:
             count += 1
     return count
 
-def CRDP(v, r, requests, travel_times, radius_sec=300, **kwargs):
+def CRDP(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
     """Count other requests whose pickup is within radius_sec travel time from r.pickup."""
     if requests is None:
         return 0
@@ -151,12 +152,12 @@ def CRDP(v, r, requests, travel_times, radius_sec=300, **kwargs):
     for r2 in requests.values():
         if r2 is r:
             continue
-        tt = travel_times[(r.dropoff, r2.pickup)]
+        tt = travel_metrics.get_time(r.dropoff, r2.pickup)
         if tt <= radius_sec:
             count += 1
     return count
 
-def CRDD(v, r, requests, travel_times, radius_sec=300, **kwargs):
+def CRDD(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
     """Count other requests whose pickup is within radius_sec travel time from r.pickup."""
     if requests is None:
         return 0
@@ -165,7 +166,7 @@ def CRDD(v, r, requests, travel_times, radius_sec=300, **kwargs):
     for r2 in requests.values():
         if r2 is r:
             continue
-        tt = travel_times[(r.dropoff, r2.dropoff)]
+        tt = travel_metrics.get_time(r.dropoff, r2.dropoff)
         if tt <= radius_sec:
             count += 1
     return count
@@ -212,7 +213,7 @@ class TerminalNode(Node):
         try:
             fn = TERMINALS[self.name]
             return float(fn(v=ctx["vehicle"], r=ctx["request"],
-                            travel_times=ctx["travel_times"],
+                            travel_metrics=ctx["travel_metrics"],
                             requests=ctx["requests"],
                             vehicles=ctx["vehicles"],
                             stations=ctx["stations"],
@@ -260,10 +261,10 @@ class OpNode(Node):
         return 1 + self.left.size() + self.right.size()
     
     
-def evaluate_policy_ast(root: Node, *, travel_times, vehicle:Vehicle, request:Request, requests:Dict[int, Request], vehicles:Dict[int, Vehicle], stations, current_time) -> float:
+def evaluate_policy_ast(root: Node, *, travel_metrics, vehicle:Vehicle, request:Request, requests:Dict[int, Request], vehicles:Dict[int, Vehicle], stations, current_time) -> float:
     try:
         ctx = {
-        "travel_times": travel_times,
+        "travel_metrics": travel_metrics,
         "vehicle": vehicle,
         "request": request,
         "requests": requests,

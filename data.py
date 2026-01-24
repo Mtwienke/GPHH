@@ -5,7 +5,7 @@ import random
 import math
 from dataclasses import dataclass, field
 from typing import List, Tuple
-from graph_utils import route_metrics
+from travel_metrics import travel_metrics
 #from graph_utils import route_metrics
 
 @dataclass
@@ -15,7 +15,7 @@ class Request:
 	dropoff: Tuple[float, float]
 	arrival_time: float
 	time_window: Tuple[float, float]
-	max_ride_time: float
+	#max_ride_time: float  //not necessary due to no ride pooling
 	demand: int = 1
 	
 	
@@ -41,13 +41,13 @@ def euclidean_distance(p1, p2):
 	return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
 
-def travel_time(u, v, G, phi=0.01, t_service=0):
-	travelTime, travelDistance = route_metrics(G, u, v)
+def travel_time(u, v, tm: travel_metrics, phi=0.01, t_service=0):
+	travelTime = tm.get_time(u, v)
 	return travelTime
 
 
-def energy_cost(u, v, beta=0.0005):
-	return beta * euclidean_distance(u, v)
+def energy_cost(u, v, tm:travel_metrics, beta=0.0005):
+	return beta * tm.get_distance(u, v)
 
 def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, time_horizon=1440, n_chargingStations = 3, seed=42, simulator=None, norming_policy = None):
 	random.seed(seed)
@@ -60,14 +60,14 @@ def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, tim
 			arrival_time = random.uniform(0, time_horizon - 180)
 			tstart = arrival_time
 			tend = arrival_time + 15
-			max_ride_time = travel_time(u = startNode, v = destinationNode, G = graph) * 2
+			#max_ride_time = travel_time(u = startNode, v = destinationNode, G = graph) * 2
 			requests.append(Request(
 				id=r,
 				pickup=startNode,
 				dropoff=destinationNode,
 				arrival_time=arrival_time,
 				time_window=(tstart, tend),
-				max_ride_time=max_ride_time
+				#max_ride_time=max_ride_time
 			))
 			
 		vehicles = [
