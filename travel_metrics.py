@@ -52,8 +52,10 @@ class travel_metrics:
         key_nodes = set()
         for inst in instances:
             for r in inst["requests"]:
-                key_nodes.add(r.pickup)
-                key_nodes.add(r.dropoff)
+                if r.pickup:
+                    key_nodes.add(r.pickup)
+                if r.dropoff:
+                    key_nodes.add(r.dropoff)
             for v in inst["vehicles"]:
                 key_nodes.add(v.location)
             for s in inst.get("stations", []):
@@ -69,7 +71,7 @@ class travel_metrics:
             uidx = node_to_idx[u]
 
             # Your custom Dijkstra returning {v: (t, d)}
-            lengths = self.dijkstra_time_and_dist(graph, u, time_attr=time_attr, dist_attr=dist_attr)
+            lengths = self.dijkstra_time_and_dist(G=graph, source=u, time_attr=time_attr, dist_attr=dist_attr)
 
             # Fill only columns we care about
             # (If you really want all N targets, this is still N assignments per row)

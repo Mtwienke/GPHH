@@ -28,9 +28,9 @@ def main():
 	norming_policy = generate_norming_policy ()
 	# Generate training/validation/test instances
 	print("generating instances")
-	train_instances = generate_instances(graph = G, n_instances=5, n_requests=500, n_vehicles=50)
-	val_instances = generate_instances(graph = G, n_instances=5, n_requests=500, n_vehicles=50)
-	test_instances = generate_instances(graph = G, n_instances=5, n_requests=500, n_vehicles=50)
+	train_instances = generate_instances(graph = G, n_instances=5, n_requests=50, n_vehicles=5)
+	val_instances = generate_instances(graph = G, n_instances=5, n_requests=50, n_vehicles=5)
+	test_instances = generate_instances(graph = G, n_instances=5, n_requests=50, n_vehicles=5)
 	
 	print("generating a cache for travel_times")
 	# Initialize and train the GP engine
@@ -45,7 +45,7 @@ def main():
 			norm_score=sim.run(instance=instance, policy_pair=norming_policy,travel_metrics=tm)
 			instance['normscore']=norm_score
 	gp = GPEngine(simulator=sim, train_instances=train_instances, val_instances=val_instances, logger=logger, travel_metrics=tm)
-	best_individual = gp.train(n_generations=100)
+	best_individual = gp.train(n_generations=10)
 	
 	logger.log("\n--- Testing Best Individual ---")
 	avg_test_score = gp.evaluate(best_individual, test_instances, normalise=True)
@@ -56,7 +56,7 @@ if __name__ == '__main__':
 	main()
 	#G = load_graph(place="Höxter, Germany", add_charging=True, max_buildings= 50000)
 	"""logger = utils.Logger()
-	manager = GraphManager("Detmold, Germany", include_charging=True, max_buildings= 50000, logger=logger)
+	manager = GraphManager("Höxter, Germany", include_charging=True, max_buildings= 50000, logger=logger)
 	manager.loadGraph()
 	G = manager.graph
 	manager.show_graph()"""

@@ -4,20 +4,28 @@
 import random
 import math
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from travel_metrics import travel_metrics
+from enum import Enum, auto
 #from graph_utils import route_metrics
+
+Coord= Tuple[float, float]
+
+class Request_Type(Enum):
+	RIDE = auto()
+	CHARGE = auto()
+	IDLE = auto()
 
 @dataclass
 class Request:
-	id: int
-	pickup: Tuple[float, float]
-	dropoff: Tuple[float, float]
-	arrival_time: float
-	time_window: Tuple[float, float]
-	#max_ride_time: float  //not necessary due to no ride pooling
-	demand: int = 1
-	
+    id: int
+    request_type: Request_Type
+
+    pickup: Optional[Coord] = None
+    dropoff: Optional[Coord] = None
+    arrival_time: float = 0.0
+    time_window: Optional[Tuple[float, float]] = None
+    demand: int = 0  # Ride: >0, Charge/Idle: 0
 	
 @dataclass
 class Vehicle:
@@ -62,6 +70,7 @@ def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, tim
 			tend = arrival_time + 15
 			#max_ride_time = travel_time(u = startNode, v = destinationNode, G = graph) * 2
 			requests.append(Request(
+				request_type=Request_Type.RIDE,
 				id=r,
 				pickup=startNode,
 				dropoff=destinationNode,
@@ -69,6 +78,24 @@ def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, tim
 				time_window=(tstart, tend),
 				#max_ride_time=max_ride_time
 			))
+		requests.append(Request(
+			request_type=Request_Type.CHARGE,
+			id=-1,
+			pickup=None,
+			dropoff=None,
+			arrival_time=None,
+			time_window=None,
+			#max_ride_time=max_ride_time
+		))
+		requests.append(Request(
+			request_type=Request_Type.IDLE,
+			id=-2,
+			pickup=None,
+			dropoff=None,
+			arrival_time=None,
+			time_window=None,
+			#max_ride_time=max_ride_time
+		))
 			
 		vehicles = [
 			Vehicle(id=k, location=random.choice(nodes))

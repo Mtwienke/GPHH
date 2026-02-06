@@ -12,10 +12,10 @@ import heapq
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from copy import deepcopy
-from data import Vehicle, Request
+from data import Vehicle, Request, Request_Type
 
-from terminals import evaluate_policy_ast
-from graph_utils import route_metrics
+from terminals import evaluate_policy_ast, choose_closest_station
+from travel_metrics import travel_metrics
 
 
 # -----------------------------
@@ -31,13 +31,14 @@ class Event:
 
 @dataclass
 class State:
-    travel_metrics: Any
+    travel_metrics: travel_metrics
     fleet: Dict[int, Vehicle]                 # vehicle_id -> Vehicle (expects: .id, .node, .charge_level, .capacity, .busy_until)
     requests: Dict[int, Request]              # request_id -> Request (expects: .id, .pickup_node, .dropoff_node, .arrival_time, .time_window)
     stations: List[Any]                   # list of charging stations (expects: .id, .node)
     time: float = 0.0
     event_queue: List[Event] = field(default_factory=list)
     waiting_ids: List[int] = field(default_factory=list)  # request ids waiting for assignment
+    _last_totals: Tuple[float, float, float, float] = (0, 0, 0, 0)
 
     def push_event(self, ev: Event) -> None:
         heapq.heappush(self.event_queue, ev)
@@ -59,6 +60,7 @@ class Simulator:
                  service_time_dropoff: float = 0.0,
                  beta_energy_per_m: float = 0.0002,  # energy per meter
                  penalty_weight_late: float = 2.0,
+                 gamma_charging_per_min: float = 0.5,
                  log=None):
         self.t_pu = service_time_pickup
         self.t_do = service_time_dropoff
@@ -66,6 +68,7 @@ class Simulator:
         self.pen_late = penalty_weight_late
         self.log = log  # optional Logger with .log(...)
         self.travel_metrics = travel_metrics
+        self.charging_per_min = gamma_charging_per_min
 
     # -------------------------
     # Public entry point
@@ -94,11 +97,13 @@ class Simulator:
 
         # Seed event queue with request arrivals
         for r in S.requests.values():
-            S.push_event(Event(time=float(r.arrival_time), type='request_arrival', payload=r.id))
+            if r.arrival_time:
+                S.push_event(Event(time=float(r.arrival_time), type='request_arrival', payload=r.id))
 
         # Stats for objective
         total_travel_time = 0.0
         total_travel_dist = 0.0
+        total_waittime = 0.0
         late_penalty = 0.0
 
         veh_policy, req_policy = policy_pair
@@ -122,8 +127,8 @@ class Simulator:
                         self.log.log(f"[t={S.time:.1f}] Request {rid} queued (no free vehicle)")
                 else:
                     # Assign immediately and schedule completion
-                    self._assign_and_schedule(S, best_vid, req, total_acc=(total_travel_time, total_travel_dist, late_penalty))
-                    total_travel_time, total_travel_dist, late_penalty = S._last_totals  # see _assign_and_schedule
+                    self._assign_and_schedule(S, best_vid, req)
+                    total_travel_time, total_travel_dist, late_penalty, total_waittime = S._last_totals  # see _assign_and_schedule
 
             elif ev.type == 'vehicle_free':
                 vid = ev.payload
@@ -134,13 +139,17 @@ class Simulator:
                     if best_rid is not None:
                         req = S.requests[best_rid]
                         # Remove from waiting pool and assign starting at S.time
+                        if req.request_type == Request_Type.IDLE:
+                            continue
+                        elif req.request_type == Request_Type.CHARGE:
+                            self._charge_vehicle(S=S, vid=vid, req=req)
                         try:
-                            S.waiting_ids.remove(best_rid)
+                            if best_rid >= 0:
+                                S.waiting_ids.remove(best_rid)
                         except ValueError:
                             pass
-                        self._assign_and_schedule(S, vid, req, start_time=S.time,
-                                                   total_acc=(total_travel_time, total_travel_dist, late_penalty))
-                        total_travel_time, total_travel_dist, late_penalty = S._last_totals
+                        self._assign_and_schedule(S, vid, req, start_time=S.time)
+                        total_travel_time, total_travel_dist, late_penalty, total_waittime = S._last_totals
                         if self.log:
                             self.log.log(f"[t={S.time:.1f}] π_req: v{vid} -> r{best_rid}")
                 # else stay idle
@@ -150,7 +159,7 @@ class Simulator:
                 pass
 
         # Objective: travel time + penalty on lateness
-        score = float(total_travel_time + self.pen_late * late_penalty)
+        score = float(total_travel_time + total_waittime + self.pen_late * late_penalty)
         if 'normscore' in instance.keys():
             return score/instance['normscore']
         else:
@@ -158,12 +167,12 @@ class Simulator:
     # -------------------------
     # Assignment helper
     # -------------------------
-    def _assign_and_schedule(self, S: State, vid: int, req: Any, total_acc: Tuple[float, float, float], start_time: Optional[float] = None) -> None:
+    def _assign_and_schedule(self, S: State, vid: int, req: Any, start_time: Optional[float] = None) -> None:
         """Assign vehicle vid to request, schedule its completion, and update totals.
         total_acc = (total_travel_time, total_travel_dist, late_penalty)
         If start_time is None, we assume assignment triggered by request_arrival at S.time.
         """
-        total_travel_time, total_travel_dist, late_penalty = total_acc
+        total_travel_time, total_travel_dist, late_penalty, total_waittime = S._last_totals
         v = S.fleet[vid]
         now = S.time if start_time is None else start_time
 
@@ -174,6 +183,7 @@ class Simulator:
 
         # Pickup can only start after arriving to pickup and not before earliest window
         start_service = max(now + t_to_pu, float(req.time_window[0]))
+        total_waittime = total_waittime + start_service - req.time_window[0]
         pickup_finish = start_service + self.t_pu
         dropoff_finish = pickup_finish + t_pu_do + self.t_do
 
@@ -194,8 +204,23 @@ class Simulator:
             self.log.log(
                 f"[t={S.time:.1f}] Assign v{vid}->r{req.id}; toPu={t_to_pu:.1f}s/{d_to_pu:.0f}m, pu->do={t_pu_do:.1f}s/{d_pu_do:.0f}m, finish={dropoff_finish:.1f}, late={lateness:.1f}")
         # store back
-        S._last_totals = (total_travel_time, total_travel_dist, late_penalty)
+        S._last_totals = (total_travel_time, total_travel_dist, late_penalty, total_waittime)
 
+    def _charge_vehicle(self, S: State, vid: int, req: Any, start_time: Optional[float] = None) -> None:
+        total_travel_time, total_travel_dist, late_penalty, total_waittime = S._last_totals
+        v = S.fleet[vid]
+        now = S.time if start_time is None else start_time
+        
+        nearest_station, nstt = choose_closest_station(vehicle=v, stations=S.stations, travel_metrics=self.travel_metrics)
+        nstd = self.travel_metrics.get_distance(v.location, nearest_station.location)
+        charging_time = ((v.battery_capacity-v.charge_level)/self.charging_per_min)*60
+        
+        v.charge_level = v.capacity
+        v.location = nearest_station.location
+        v.busy_until = now + nstt + charging_time
+        S.push_event(Event(time=v.busy_until, type='vehicle_free', payload=vid))
+        S._last_totals = (total_travel_time+nstt, total_travel_time+nstd, late_penalty, total_waittime)
+        
     # -------------------------
     # Selection helpers
     # -------------------------

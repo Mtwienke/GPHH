@@ -6,7 +6,7 @@ import math
 import copy
 import operator
 import math
-from data import travel_time, energy_cost, euclidean_distance, Vehicle, Request
+from data import travel_time, energy_cost, euclidean_distance, Vehicle, Request, Request_Type
 import utils
 import traceback
 from travel_metrics import travel_metrics
@@ -27,6 +27,17 @@ FUNCTIONS = {
 	'min': min,
 	'max': max,
 }
+def ISCR(r, **kwargs):
+    if (r.request_type == Request_Type.CHARGE):
+        return 1
+    else:
+        return 0
+
+def ISIR(r, **kwargs):
+    if (r.request_type == Request_Type.IDLE):
+        return 1
+    else:
+        return 0
 
 def TVPU(v, r, travel_metrics, **kwargs):
     return travel_metrics.get_time(v.location, r.pickup)
@@ -80,7 +91,7 @@ def OBV(v, r, vehicles, travel_metrics, t=None, **kwargs):
      
 def LCT(v, r, vehicles, travel_metrics, t=None, **kwargs):
     if t is None:
-        raise ValueError("OBV needs current time t")
+        raise ValueError("LCT needs current time t")
 
     best = float("inf")
     for veh in vehicles.values():
@@ -122,7 +133,7 @@ def CRPP(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
 
     count = 0
     for r2 in requests.values():
-        if r2 is r:
+        if r2 is r or r2.pickup == None:
             continue
         tt = travel_metrics.get_time(r.pickup, r2.pickup)
         if tt <= radius_sec:
@@ -136,7 +147,7 @@ def CRPD(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
 
     count = 0
     for r2 in requests.values():
-        if r2 is r:
+        if r2 is r or r2.dropoff == None:
             continue
         tt = travel_metrics.get_time(r.pickup, r2.dropoff)
         if tt <= radius_sec:
@@ -150,7 +161,7 @@ def CRDP(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
 
     count = 0
     for r2 in requests.values():
-        if r2 is r:
+        if r2 is r or r2.pickup == None:
             continue
         tt = travel_metrics.get_time(r.dropoff, r2.pickup)
         if tt <= radius_sec:
@@ -164,7 +175,7 @@ def CRDD(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
 
     count = 0
     for r2 in requests.values():
-        if r2 is r:
+        if r2 is r or r2.dropoff == None:
             continue
         tt = travel_metrics.get_time(r.dropoff, r2.dropoff)
         if tt <= radius_sec:
@@ -173,6 +184,8 @@ def CRDD(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
 
 # Terminal feature functions
 TERMINALS = {
+    'ISCR': ISCR,
+    'ISIR': ISIR,
 	'TVPU': TVPU,
 	'COST': COST,
 	'DEM': DEM,
@@ -193,6 +206,26 @@ TERMINALS = {
 
 Number = float
 
+def choose_closest_station(vehicle, stations, travel_metrics):
+    best_s = None
+    best_tt = float("inf")
+    for s in stations:
+        tt = travel_metrics.get_time(vehicle.location, s.location)
+        if tt < best_tt:
+            best_tt = tt
+            best_s = s
+    return best_s, best_tt
+
+def get_effective_pickup(v, r, stations, travel_metrics):
+    if r.request_type == Request_Type.RIDE:
+        return r.pickup
+    if r.request_type == Request_Type.CHARGE:
+        s, _ = choose_closest_station(v, stations, travel_metrics)
+        return s.location
+    if r.request_type == Request_Type.IDLE:
+        return v.location  # “no drive”
+    raise ValueError
+
 @dataclass(frozen=True)
 class Node:
     def eval(self, ctx, FUNCTIONS, TERMINALS) -> Number:
@@ -204,7 +237,6 @@ class Node:
     def size(self) -> int:
         raise NotImplementedError
 
-
 @dataclass(frozen=True)
 class TerminalNode(Node):
     name: str  # nur Name, keine Funktion!
@@ -212,6 +244,8 @@ class TerminalNode(Node):
     def eval(self, ctx, FUNCTIONS, TERMINALS) -> Number:
         try:
             fn = TERMINALS[self.name]
+            if ctx["request"]:
+                ctx["request"].pickup = get_effective_pickup(v=ctx["vehicle"], r=ctx["request"], stations=ctx["stations"], travel_metrics=ctx["travel_metrics"])
             return float(fn(v=ctx["vehicle"], r=ctx["request"],
                             travel_metrics=ctx["travel_metrics"],
                             requests=ctx["requests"],
