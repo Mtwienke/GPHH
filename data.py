@@ -57,17 +57,19 @@ def travel_time(u, v, tm: travel_metrics, phi=0.01, t_service=0):
 def energy_cost(u, v, tm:travel_metrics, beta=0.0005):
 	return beta * tm.get_distance(u, v)
 
-def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, time_horizon=1440, n_chargingStations = 3, seed=42, simulator=None, norming_policy = None):
+def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, time_horizon=60*60*24, n_chargingStations = 3, seed=42, simulator=None, norming_policy = None):
 	random.seed(seed)
 	instances = []
+	instance_seeds = random.sample(range(1, 30*n_instances), n_instances)
 	nodes = [n for n, d in graph.nodes(data=True) if d.get("building")]
 	for i in range(n_instances):
 		requests = []
+		random.seed(instance_seeds[i]*seed)
 		for r in range(n_requests):
 			startNode, destinationNode = random.sample(nodes, 2)
 			arrival_time = random.uniform(0, time_horizon - 180)
 			tstart = arrival_time
-			tend = arrival_time + 15
+			tend = arrival_time + 30
 			#max_ride_time = travel_time(u = startNode, v = destinationNode, G = graph) * 2
 			requests.append(Request(
 				request_type=Request_Type.RIDE,
@@ -117,3 +119,7 @@ def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, tim
 			instance['normscore']=norm_score
 		instances.append(instance)
 	return instances
+
+
+def import_requests(filepath):
+    pass

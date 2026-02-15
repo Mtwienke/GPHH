@@ -2,3 +2,5 @@ logs/
 GPHH/
 __pycache__/
 cache/
+external_data/
+data/

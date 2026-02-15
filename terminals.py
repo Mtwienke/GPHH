@@ -42,8 +42,13 @@ def ISIR(r, **kwargs):
 def TVPU(v, r, travel_metrics, **kwargs):
     return travel_metrics.get_time(v.location, r.pickup)
 
-def COST(v, r, travel_metrics, **kwargs):
-    return travel_metrics.get_time(v.location, r.pickup) + travel_metrics.get_time(r.pickup, r.dropoff)
+def COST(v, r, travel_metrics, t, **kwargs):
+    if r.time_window[1] - t - travel_metrics.get_time(v.location, r.pickup) < 0:
+        return 6000
+    increased_waittime = travel_metrics.get_time(v.location, r.pickup)
+    increased_traveldistance = travel_metrics.get_distance(v.location, r.pickup) + travel_metrics.get_distance(r.pickup, r.dropoff)
+    
+    return increased_waittime + increased_traveldistance
 
 def DEM(v, r, travel_metrics, **kwargs):
     return travel_metrics.get_time(v.location, r.pickup) + travel_metrics.get_time(r.pickup, r.dropoff)
@@ -400,11 +405,11 @@ def subtree_crossover_ast(p1: Node, p2: Node) -> Tuple[Node, Node]:
 def subtree_mutation_ast(root: Node,
                          FUNCTIONS = FUNCTIONS,
                          TERMINALS = TERMINALS,
-                         max_init_depth: int = 3,
-                         max_tree_depth: int = 6,
+                         max_init_depth: int = 2,
+                         max_tree_depth: int = 5,
                          p_const: float = 0.2,
                          const_range=(-5.0, 5.0),
-                         retries: int = 20) -> Node:
+                         retries: int = 5) -> Node:
     """
     Wählt einen zufälligen Knoten (Subtree) und ersetzt ihn durch einen neuen zufälligen Subtree.
     Mit retries, um max_tree_depth einzuhalten.

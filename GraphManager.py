@@ -24,6 +24,8 @@ import pyproj
 import heapq
 from math import inf
 import numpy as np
+from pathlib import Path
+import copy
 
 class GraphManager:
 	def __init__(self, place: Optional[str] = None, 
@@ -58,18 +60,52 @@ class GraphManager:
 			self.log(self.add_buildings())
 		if self.includeCharging:
 			self.stations = self.add_charging_stations()
-		self.fix_missing_edge_attributes(self.defaultSpeed)
-		self.graph = ox.project_graph(self.graph)
+		#self.fix_missing_edge_attributes(self.defaultSpeed)
 		# Force all street_count attributes to int type before saving
 		nx.set_node_attributes(
 			self.graph, {n: int(float(d["street_count"])) for n, d in self.graph.nodes(data=True) if "street_count" in d}, "street_count"
 		)
-		self.graph = ox.distance.add_edge_lengths(self.graph)      # adds 'length' in meters
+		#self.graph = ox.distance.add_edge_lengths(self.graph)      # adds 'length' in meters
 		self.graph = ox.routing.add_edge_speeds(self.graph)             # adds 'speed_kph'
 		self.fix_missing_edge_attributes(self.defaultSpeed)
 		self.graph = ox.routing.add_edge_travel_times(self.graph)       # adds 'travel_time' in seconds
 		ox.save_graphml(self.graph, self.filepath)
+		print("Graph CRS:", self.graph.graph["crs"])
+		u, v, k, d = next(iter(self.graph.edges(keys=True, data=True)))
+		geom = d.get("geometry")
+		print("Example edge length:", d.get("length"))
 		self.log(f"[Graph] Saved graph to {self.filepath}")
+		lengths = []
+		bad = []
+		for u, v, k, d in self.graph.edges(keys=True, data=True):
+			L = d.get("length", np.nan)
+			if L is None: 
+				continue
+			lengths.append(L)
+			if L > 10000:  # >10 km in a city is suspicious
+				bad.append((u, v, k, L, d.get("highway"), d.get("type")))
+
+		print("max length:", np.nanmax(lengths))
+		print("num >10km:", len(bad))
+		if bad:
+			print("first bad:", bad[0])
+
+			u,v,k,L,hw,typ = bad[0]
+			print("u coords:", self.graph.nodes[u]["x"], self.graph.nodes[u]["y"])
+			print("v coords:", self.graph.nodes[v]["x"], self.graph.nodes[v]["y"])
+			geom = self.graph[u][v][k].get("geometry")
+			length = self.graph[u][v][k].get("length")
+			ed = self.graph[u][v][k]
+			print("edge length:", ed.get("length"))
+			print("geom length:", ed["geometry"].length if "geometry" in ed else None)
+			print("has geom:", geom is not None, "geom length:", geom.length if geom else None)
+			if geom:
+				xs = [c[0] for c in geom.coords]
+				ys = [c[1] for c in geom.coords]
+				print("geom bounds:", geom.bounds)
+				print("x range:", min(xs), max(xs))
+				print("y range:", min(ys), max(ys))
+			print(ox.__version__)
 		
 	def loadGraph(self, filepath=None):
 		if filepath:
@@ -77,22 +113,37 @@ class GraphManager:
 			
 		elif self.place:
 			os.makedirs(self.graphFolder, exist_ok=True)
-			
+			PROJECT_ROOT = Path(__file__).resolve().parent  # oder parent.parent wenn nötig
+			GRAPH_ROOT = PROJECT_ROOT/self.graphFolder
 			# Create safe filename
 			safe_place = self.place.replace(",", "").replace(" ", "_")
 			filepath = os.path.join(self.graphFolder, f"{safe_place}_graph.graphml")
 			
 			if os.path.exists(filepath):
 				print(f"[Graph] Loading cached graph: {filepath}")
-				G = ox.load_graphml(filepath)      
+				self.graph = ox.load_graphml(filepath)      
 			else:
+				self.filepath = filepath
 				self.generateGraph()
 		
 			
 	def downloadBaseGraph(self):
 		self.log(f"[Graph] Downloading graph for {self.place}...")
 		self.graph = ox.graph_from_place(self.place, network_type=self.networkType)
-		self.fix_missing_edge_attributes(self.defaultSpeed)
+		# project right away to a local UTM (meters)
+		self.graph = ox.project_graph(self.graph)
+		#self.fix_missing_edge_attributes(self.defaultSpeed)
+		# compute lengths from geometry if present, else from straight line between nodes
+		for u, v, k, d in self.graph.edges(keys=True, data=True):
+			if d.get("length") is None:
+				geom = d.get("geometry")
+				if geom is not None:
+					d["length"] = float(geom.length)
+				else:
+					d["length"] = float(
+						LineString([(self.graph.nodes[u]["x"], self.graph.nodes[u]["y"]),
+									(self.graph.nodes[v]["x"], self.graph.nodes[v]["y"])]).length
+            )
 		
 	def show_graph(self, highlight_buildings=True, highlight_charging=True):
 		fig, ax = ox.plot_graph(
@@ -132,7 +183,7 @@ class GraphManager:
 		fixed_len = fixed_spd = 0
 		for u, v, k, data in self.graph.edges(keys=True, data=True):
 			# Fix length
-			if (
+			"""if (
 				data.get("length") is None 
 				or (isinstance(data.get("length"), float) and math.isnan(data["length"]))
 			):
@@ -140,7 +191,7 @@ class GraphManager:
 					data["length"] = data["geometry"].length
 				else:
 					data["length"] = 1.0
-				fixed_len += 1
+				fixed_len += 1"""
 			
 			# Fix speed
 			if (
@@ -176,6 +227,9 @@ class GraphManager:
 		# Query charging stations
 		chargers = ox.features_from_place(self.place, tags={"amenity": "charging_station"})
 		
+		# reproject chargers to graph CRS (important!)
+		chargers = chargers.to_crs(self.graph.graph["crs"])
+  
 		stations = []
 		for _, row in chargers.iterrows():
 			if "geometry" not in row:
@@ -189,7 +243,7 @@ class GraphManager:
 			nearest_node = ox.distance.nearest_nodes(self.graph, pt.x, pt.y)
 			
 			# Tag this node as a charging station
-			self.graph.nodes[nearest_node]["charging_station"] = True
+			self.graph.nodes[nearest_node]["type"] = "charging_station"
 			stations.append(nearest_node)
 			
 		print(f"[Graph] Added {len(stations)} charging stations.")
@@ -199,7 +253,8 @@ class GraphManager:
 		# ---- prepare buildings list ----
 		self.log("[Graph] Fetching buildings...")
 		buildings = ox.features_from_place(self.place, tags={"building": True})
-		
+		buildings = buildings.to_crs(self.graph.graph["crs"])
+  
 		if buildings.empty:
 			return "[Graph] No buildings found."
 		if len(buildings) > self.maxBuildings:
@@ -287,7 +342,6 @@ class GraphManager:
 		# ---- batch-split per edge ----
 		next_node_id = max([n for n in self.graph.nodes]) + 1 if len(self.graph.nodes) > 0 and all(isinstance(n, int) for n in self.graph.nodes) else (len(self.graph.nodes) + 1)
 		added_buildings = 0
-		
 		edge_items = list(edge_to_buildings.items())
 		self.log(f"list edge_items hat a length of {len(edge_items)} with values like {edge_items[0]}")
 		if showProgress:
@@ -305,9 +359,9 @@ class GraphManager:
 			
 			# get original edge data and geometry (prefer G edges if present)
 			if self.graph.has_edge(u, v, key):
-				orig_data = dict(self.graph.get_edge_data(u, v, key))  # copy
+				orig_data = copy.deepcopy(self.graph.get_edge_data(u, v, key))  # copy
 			else:
-				orig_data = dict(G_roads.get_edge_data(u, v, key) or {})
+				orig_data = copy.deepcopy(G_roads.get_edge_data(u, v, key) or {})
 				
 			geom = orig_data.get("geometry")
 			if geom is None:
@@ -326,7 +380,7 @@ class GraphManager:
 				split_exception +=1
 				
 			if isinstance(splitted, GeometrySequence):
-				split_exception -=1
+				split_exception -=0
 			elif isinstance(splitted, (MultiLineString, GeometryCollection)):
 				# nothing meaningful to split, keep original edge
 				print(splitted.geoms.geom_type)
@@ -382,8 +436,35 @@ class GraphManager:
 				for a, b in zip(segment_nodes[:-1], segment_nodes[1:]):
 					seg_geoms.append(LineString([(self.graph.nodes[a]["x"], self.graph.nodes[a]["y"]), (self.graph.nodes[b]["x"], self.graph.nodes[b]["y"])]))
 					
+			# Add edges with selected attributes preserved (do NOT propagate old length/travel_time)
+			DROP = {"length", "geometry", "travel_time"}  # length & travel_time must be recomputed
+			KEEP = {k: v for k, v in orig_data.items() if k not in DROP}
 			# Add edges with original attributes preserved (but update geometry & length)
 			for a, b, geom_seg in zip(segment_nodes[:-1], segment_nodes[1:], seg_geoms):
+				edge_attrs = dict(KEEP)  # fresh dict per edge
+
+				# set correct geometry + length for this segment
+				edge_attrs["geometry"] = geom_seg
+				edge_attrs["length"] = float(geom_seg.length)
+
+				# ensure speed exists (or you can leave it for add_edge_speeds later)
+				if edge_attrs.get("speed_kph") is None:
+					spd = self.parse_maxspeed(edge_attrs.get("maxspeed"))
+					edge_attrs["speed_kph"] = float(spd if spd is not None else walking_speed_kph)
+
+				self.graph.add_edge(a, b, **edge_attrs)
+				newk = self.graph.add_edge(a, b, **edge_attrs)
+				ed = self.graph[a][b][newk]
+				if "geometry" in ed:
+					assert abs(ed["length"] - ed["geometry"].length) < 1e-6
+				# if original was two-way, add reverse with mirrored geometry and same length
+				if not edge_attrs.get("oneway", False):
+					rev_attrs = dict(edge_attrs)
+					rev_geom = LineString(list(geom_seg.coords)[::-1])
+					rev_attrs["geometry"] = rev_geom
+					rev_attrs["length"] = float(rev_geom.length)
+					self.graph.add_edge(b, a, **rev_attrs)
+			"""for a, b, geom_seg in zip(segment_nodes[:-1], segment_nodes[1:], seg_geoms):
 				seg_len = float(geom_seg.length)
 				edge_attrs = orig_data.copy()
 				edge_attrs["geometry"] = geom_seg
@@ -396,7 +477,7 @@ class GraphManager:
 				if not edge_attrs.get("oneway", False):
 					rev_attrs = edge_attrs.copy()
 					rev_attrs["geometry"] = LineString(list(geom_seg.coords)[::-1])
-					self.graph.add_edge(b, a, **rev_attrs)
+					self.graph.add_edge(b, a, **rev_attrs)"""
 					
 			# Attach buildings to connection nodes:
 			# we have blist_sorted -> each building maps to a split point -> we need the nearest connection node index

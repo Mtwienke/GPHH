@@ -38,55 +38,74 @@ class GPEngine:
 		self.train_instances = train_instances
 		self.val_instances = val_instances
 		self.travel_metrics = travel_metrics
-		self.population_size = 50
-		self.elite_size = 1
-		self.tournament_size = 5
+		self.population_size = 1000
+		self.elite_size = 0
+		self.tournament_size = 7
 		self.crossover_rate = 0.8
-		self.mutation_rate = 0.2
+		self.mutation_rate = 0.15
+		self.reproduction_rate = 0.05
 		
-	def train(self, n_generations=20, max_workers=2):
+	def train(self, n_generations=20, max_workers=2, split_training = False):
 		population = [GPIndividual() for _ in range(self.population_size)]
 		self.logger.log(f"[Init] Created {len(population)} individuals.")
 		for i, ind in enumerate(population):
 			self.logger.log(f"  Ind-{i}: Veh={ind.veh_policy} | Req={ind.req_policy}")
 		best = None
 		
+		if split_training:
+			instances_per_gen = len(self.train_instances)//n_generations
+		best_per_gen = list()
 		
 		for gen in range(n_generations):
 			print(f"Started Generation {gen}.")
-
+			if split_training:
+				try:
+					instances = self.train_instances[gen*instances_per_gen:(gen+1)*instances_per_gen]
+				except:
+					instances = self.train_instances
+			else:
+				instances = self.train_instances
 			evaluate_population_parallel(
                 population=population,
                 simulator=self.simulator,
                 travel_metrics=self.travel_metrics,
-                instances=self.train_instances,
+                instances=instances,
                 max_workers=max_workers,
-                chunksize=1,  # with 50 inds, 1 is fine; can try 2-5 later
+                chunksize=10,  # with 50 inds, 1 is fine; can try 2-5 later
             )
 
 			population.sort(key=lambda x: x.fitness)
 			best = population[0]
+			if best_per_gen:
+				best_per_gen.append(copy.deepcopy(best))
+				print(f"in if with best_per_gen {best_per_gen}")
+			else:
+				best_per_gen = [copy.deepcopy(best)]
+				print(f"in else with best_per_gen {best_per_gen}")
 			self.logger.log(f"Gen {gen}: Best Fitness = {best.fitness:.4f}")
 
 			
 			new_pop = population[:self.elite_size]
-			if gen % 5 == 0:
+			"""if gen % 5 == 0:
 				for _ in range(3):  # inject fresh individuals
-					new_pop.append(GPIndividual())
+					new_pop.append(GPIndividual())"""
 			while len(new_pop) < self.population_size:
-				if random.random() < self.crossover_rate:
+				random_number = random.random()
+				if random_number < self.crossover_rate:
 					p1 = self.tournament_select(population)
 					p2 = self.tournament_select(population)
 					c1, c2 = self.crossover(p1, p2)
 					new_pop.extend([c1, c2])
-				elif random.random() < self.mutation_rate:
+				elif random_number < self.mutation_rate + self.crossover_rate:
 					p = self.tournament_select(population)
 					m = self.mutate(p)
 					new_pop.append(m)
-				else:
+				elif random_number < self.mutation_rate + self.crossover_rate + self.reproduction_rate:
 					new_pop.append(self.tournament_select(population).clone())
+				else:
+					print("something strange happened here")
 					
-			population = new_pop[:self.population_size]
+			population = new_pop
 			
 			fitnesses = [f for f in (ind.fitness for ind in population) if f is not None]
 			if fitnesses:
@@ -96,8 +115,24 @@ class GPEngine:
 			self.logger.log(f"         Best Veh Policy: {best.veh_policy}")
 			self.logger.log(f"         Best Req Policy: {best.req_policy}")
 			
-			
-			
+		print("\\n--- Validating Best Individuals Per Generation ---")
+		evaluate_population_parallel(
+                population=best_per_gen,
+                simulator=self.simulator,
+                travel_metrics=self.travel_metrics,
+                instances=self.val_instances,
+                max_workers=max_workers,
+                chunksize=5,  # with 50 inds, 1 is fine; can try 2-5 later
+            )
+
+		for gen in range(len(best_per_gen)):
+			self.simulator.run(self.val_instances[0], [best_per_gen[gen].veh_policy, best_per_gen[gen].req_policy], self.travel_metrics, plot_dir = f"Gen {gen}")
+		best_per_gen.sort(key=lambda x: x.fitness)
+		best = best_per_gen[0]
+		self.logger.log(f"Validation: Best Fitness = {best.fitness:.4f}")
+		print(f"Validation: Best Fitness = {best.fitness:.4f}")
+  
+  
 		self.logger.log("\\n--- Final Best Individual ---")
 		self.logger.log(f"Best Fitness: {best.fitness:.4f}")
 		self.logger.log(f"Vehicle Policy (postfix): {best.veh_policy}")
