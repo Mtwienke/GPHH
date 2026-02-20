@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from copy import deepcopy
 from data import Vehicle, Request, Request_Type
 
-from terminals import evaluate_policy_ast, choose_closest_station, protected_div
+from terminals import evaluate_policy_ast, choose_closest_station, protected_div, choose_closest_station_from_location
 from travel_metrics import travel_metrics
 
 from vehicle_recorder import ActivityRecorder, VehState, SoCPoint, StateSegment, export_csv, plot_vehicle_png
@@ -62,9 +62,9 @@ class Simulator:
                  travel_metrics,
                  service_time_pickup: float = 0.0,
                  service_time_dropoff: float = 0.0,
-                 beta_energy_per_m: float = 0.0005,  # energy per meter
-                 penalty_weight_late: float = 600000.0,
-                 gamma_charging: float = 0.05,
+                 beta_energy_per_m: float = 0.001,  # energy per meter
+                 penalty_weight_late: float = 30*60*10,
+                 gamma_charging: float = 0.05, # energy charged per second
                  log=None):
         self.t_pu = service_time_pickup
         self.t_do = service_time_dropoff
@@ -94,6 +94,7 @@ class Simulator:
         
         rec = ActivityRecorder()
 
+        #print(f"n_requests = {len(reqs)}")
 
         # initial state: alle idle bei t=0 (oder S.time initial)
         for v in fleet.values():
@@ -121,16 +122,21 @@ class Simulator:
         late_penalty = 0.0
 
         veh_policy, req_policy = policy_pair
+        
+        #print(f"initial event queue size of {len(S.event_queue)}")
 
         # Main event loop
         while True:
             ev = S.pop_event()
+            #print(f"event is {ev}")
             
             if ev is None:
                 break
             S.time = ev.time
             
             if ev.type == 'request_timeout':
+                rid = ev.payload
+                #print(f"req {rid} timed out")
                 if rid in S.waiting_ids:
                     S.req_rec.switch(req, S.time, ReqState.LOST, vehicle_id=None)
                     S.waiting_ids.remove(rid)
@@ -145,6 +151,7 @@ class Simulator:
                 # Choose vehicle by π_veh among vehicles free at S.time
                 best_vid, best_score = self._select_vehicle(S, req, veh_policy)
                 if best_vid is None:
+                    #print(f"Request {rid} got no fitting vehicle, putting in waiting")
                     # Leave request in waiting pool
                     S.req_rec.start_waiting(req, S.time)
                     S.push_event(Event(time=S.time+(30*60), type='request_timeout', payload=rid))
@@ -152,6 +159,7 @@ class Simulator:
                         self.log.log(f"[t={S.time:.1f}] Request {rid} queued (no free vehicle)")
                 else:
                     # Assign immediately and schedule completion
+                    #print(f"assigning request {rid}")
                     self._assign_and_schedule(S, best_vid, req)
                     total_travel_time, total_travel_dist, late_penalty, total_waittime = S._last_totals  # see _assign_and_schedule
 
@@ -166,11 +174,11 @@ class Simulator:
                         # Remove from waiting pool and assign starting at S.time
                         if req.request_type == Request_Type.IDLE:
                             rec.switch(vid, S.time, VehState.IDLE, v.charge_level / v.battery_capacity)
-                            print("Staying idle was best")
+                            #print("Staying idle was best")
                             continue
                         elif req.request_type == Request_Type.CHARGE:
                             self._charge_vehicle(S=S, vid=vid, req=req)
-                            print("Charging was best")
+                            #print("Charging was best")
                         else:
                             self._assign_and_schedule(S, vid, req, start_time=S.time)
                             total_travel_time, total_travel_dist, late_penalty, total_waittime = S._last_totals
@@ -180,7 +188,7 @@ class Simulator:
                     rec.switch(vid, S.time, VehState.IDLE, v.charge_level / v.battery_capacity)
 
         # Objective: travel time + penalty on lateness
-        score = float(total_travel_dist + total_waittime + self.pen_late * late_penalty)
+        score = float(0.12*total_travel_dist + total_waittime + self.pen_late * late_penalty)
         rec.close_all(t_end=S.time, fleet=S.fleet)
         S.req_rec.close_all(S.time)
         if plot_dir:
@@ -194,11 +202,12 @@ class Simulator:
             plot_vehicle_png(gen_dir/"segments.csv", gen_dir / "soc.csv", gen_dir)
             plot_request_segments_png(gen_dir/"req_segments.csv")
         if 'normscore' in instance.keys():
-            return protected_div(score, instance['normscore'])
+            normed_score = protected_div(score, instance['normscore'])
         else:
-            if score == 0:
-                print("Got a 0")
-            return score
+            normed_score = None
+        if score == 0:
+            print("Got a 0")
+        return score, normed_score
     # -------------------------
     # Assignment helper
     # -------------------------
@@ -226,15 +235,21 @@ class Simulator:
         total_waittime = total_waittime + start_service - req.time_window[0]
         pickup_finish = start_service + self.t_pu
         dropoff_finish = pickup_finish + t_pu_do + self.t_do
-
-
+        dropoff_charging_station, _ = choose_closest_station_from_location(req.dropoff, S.stations, self.travel_metrics)
+        d_do_cs = self.travel_metrics.get_distance(req.dropoff, dropoff_charging_station.location)
+        future_distance_to_charging = d_to_pu + d_pu_do + d_do_cs
 
         # Lateness counted as arriving to pickup after latest window end
-        if (now + t_to_pu) - float(req.time_window[1]) < 0:
+        if (now + t_to_pu) - float(req.time_window[1]) > 0:
+            #print(f"too late: taking {t_to_pu} seconds to pickup, only having {req.time_window[1]-now} seconds from {now} until {req.time_window[1]}. Time window is {req.time_window[0]}, {req.time_window[1]}")
+            #print(f"As a test: (now + t_to_pu) - float(req.time_window[1]) is ({now + t_to_pu}) - {float(req.time_window[1])} {(now + t_to_pu) - float(req.time_window[1])}")
             late_penalty += 1
+            S.req_rec.switch(req, S.time, ReqState.LOST, vehicle_id=None)
         
-        elif v.charge_level-(d_to_pu+d_pu_do)*self.beta < 0:
+        elif v.charge_level-(d_to_pu+d_pu_do+future_distance_to_charging)*self.beta < 0:
+            #print(f"Vehicle {vid} was too low on battery (charge of {v.charge_level}), charging...")
             self._charge_vehicle(S=S, vid=vid) 
+            S.push_event(Event(time=S.time+(30*60), type='request_timeout', payload=req.id))
             return
         
         else:
@@ -242,6 +257,7 @@ class Simulator:
                 S.waiting_ids.remove(req.id)
             except ValueError:
                 print(f"tried removing request id {req.id}, but wasnt successful")
+            #print(f"assigning for real")
             total_travel_time += t_to_pu + t_pu_do
             total_travel_dist += d_to_pu + d_pu_do
             rec.switch(vid, now, VehState.DRIVE_TO_PICKUP, v.charge_level / v.battery_capacity, request_id=req.id)
@@ -267,6 +283,7 @@ class Simulator:
         total_travel_time, total_travel_dist, late_penalty, total_waittime = S._last_totals
         v = S.fleet[vid]
         if v.charge_level == v.battery_capacity:
+            #print(f"Vehicle {vid} already fully charged, putting to idle")
             S.rec.switch(vid, S.time, VehState.IDLE, v.charge_level / v.battery_capacity)
             return
         now = S.time if start_time is None else start_time

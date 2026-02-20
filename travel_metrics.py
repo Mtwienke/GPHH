@@ -1,66 +1,118 @@
+import os
+import re
+import numpy as np
+from collections import OrderedDict
+import numpy as np
 from math import inf
 import heapq
-import numpy as np
-from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import numpy as np
-import json
-from osmnx import graph
 from pathlib import Path
+from tqdm import tqdm
 
-def save_travel_cache_memmap(prefix, TT_memmap, TD_memmap, idx_to_node, meta):
-    TT_memmap.flush()
-    TD_memmap.flush()
-    np.save(prefix + "_nodes.npy", np.array(idx_to_node, dtype=object))
-    with open(prefix + "_meta.json", "w") as f:
-        json.dump(meta, f)
-        
-def load_travel_cache_memmap(prefix):
-    idx_to_node = np.load(prefix + "_nodes.npy", allow_pickle=True).tolist()
-    node_to_idx = {node: i for i, node in enumerate(idx_to_node)}
+BIG = 1e9
 
-    with open(prefix + "_meta.json") as f:
-        meta = json.load(f)
+class SourceFileStoreNPY:
+    def __init__(self, graph, cache_dir, time_attr="travel_time", dist_attr="length"):
+        self.G = graph
+        self.cache_dir = cache_dir
+        self.time_attr = time_attr
+        self.dist_attr = dist_attr
+        os.makedirs(cache_dir, exist_ok=True)
 
-    n = len(idx_to_node)
-    TT = np.memmap(prefix + "_TT.dat", dtype=np.float32, mode="r", shape=(n, n))
-    TD = np.memmap(prefix + "_TD.dat", dtype=np.float32, mode="r", shape=(n, n))
-    return node_to_idx, TT, TD, meta        
-# Globals inside each worker process
-_G = None
-_TIME_ATTR = None
-_DIST_ATTR = None
+    def paths(self, u):
+        uid = _safe_id(u)
+        base = os.path.join(self.cache_dir, f"src_{uid}")
+        return base + "_v.npy", base + "_t.npy", base + "_d.npy"
 
-def init_worker(graph, time_attr, dist_attr):
-    global _G, _TIME_ATTR, _DIST_ATTR
-    _G = graph
-    _TIME_ATTR = time_attr
-    _DIST_ATTR = dist_attr
+    def exists(self, u):
+        pv, pt, pd = self.paths(u)
+        return os.path.exists(pv) and os.path.exists(pt) and os.path.exists(pd)
 
-def compute_row(args):
-    """
-    args: (row_index, source_node, node_to_idx, key_nodes, BIG_T, BIG_D)
-    returns: (row_index, tt_row, td_row)
-    """
-    row_i, u, node_to_idx, key_nodes, BIG_T, BIG_D = args
+    def _atomic_save_npy(self, path, arr):
+        tmp = path + ".tmp.npy"
+        np.save(tmp, arr)
+        os.replace(tmp, path)
 
-    # your custom Dijkstra returning {v: (t,d)}
-    lengths = dijkstra_time_and_dist(_G, u, time_attr=_TIME_ATTR, dist_attr=_DIST_ATTR)
+    def build(self, u):
+        """
+        Compute Dijkstra once for source u and store arrays on disk.
+        Requires: dijkstra_time_and_dist(...) -> dict v -> (t, d)
+        """
+        lengths = dijkstra_time_and_dist(
+            self.G, u, time_attr=self.time_attr, dist_attr=self.dist_attr
+        )
 
-    n = len(key_nodes)
-    tt_row = np.full(n, BIG_T, dtype=np.float32)
-    td_row = np.full(n, BIG_D, dtype=np.float32)
+        # Convert to arrays
+        vs = np.fromiter(lengths.keys(), dtype=np.int64)
+        td = np.array([lengths[v] for v in lengths], dtype=np.float32)  # (k,2)
+        t = td[:, 0]
+        d = td[:, 1]
 
-    # Fill reachable targets that are in key_nodes
-    for v, (t, d) in lengths.items():
-        j = node_to_idx.get(v)
-        if j is not None:
-            tt_row[j] = np.float32(t)
-            td_row[j] = np.float32(d)
+        # sort by target node id for fast binary-search lookup
+        order = np.argsort(vs)
+        vs, t, d = vs[order], t[order], d[order]
 
-    tt_row[row_i] = 0.0
-    td_row[row_i] = 0.0
-    return row_i, tt_row, td_row
+        pv, pt, pd = self.paths(u)
+        self._atomic_save_npy(pv, vs)
+        self._atomic_save_npy(pt, t)
+        self._atomic_save_npy(pd, d)
+
+    def ensure(self, u):
+        if not self.exists(u):
+            self.build(u)
+
+    def load(self, u, mmap=False):
+        """
+        Load arrays for source u.
+        mmap=True uses memory mapping (low RAM, good if files are large).
+        """
+        self.ensure(u)
+        pv, pt, pd = self.paths(u)
+        mmode = "r" if mmap else None
+        v = np.load(pv, mmap_mode=mmode)
+        t = np.load(pt, mmap_mode=mmode)
+        d = np.load(pd, mmap_mode=mmode)
+        return v, t, d
+    
+class TravelMetricsDiskBackedLRU:
+    def __init__(self, store: SourceFileStoreNPY, max_sources_in_ram=50, mmap_files=False):
+        self.store = store
+        self.max_sources_in_ram = max_sources_in_ram
+        self.mmap_files = mmap_files
+        self._ram = OrderedDict()  # u -> (v_arr, t_arr, d_arr)
+
+    def _get_source(self, u):
+        if u in self._ram:
+            self._ram.move_to_end(u)
+            return self._ram[u]
+
+        v, t, d = self.store.load(u, mmap=self.mmap_files)
+        self._ram[u] = (v, t, d)
+        self._ram.move_to_end(u)
+
+        if len(self._ram) > self.max_sources_in_ram:
+            self._ram.popitem(last=False)
+
+        return v, t, d
+
+    def time_dist(self, u, v):
+        v_arr, t_arr, d_arr = self._get_source(u)
+        v = np.int64(v)
+
+        idx = np.searchsorted(v_arr, v)
+        if idx < len(v_arr) and v_arr[idx] == v:
+            return float(t_arr[idx]), float(d_arr[idx])
+        return BIG, BIG
+
+    def get_time(self, u, v):
+        return self.time_dist(u, v)[0]
+
+    def get_dist(self, u, v):
+        return self.time_dist(u, v)[1]
+
+def _safe_id(x):
+    s = str(x)
+    return re.sub(r"[^0-9A-Za-z_.-]", "_", s)
+
 
 def dijkstra_time_and_dist(G, source, time_attr="travel_time", dist_attr="length"):
     """
@@ -93,153 +145,22 @@ def dijkstra_time_and_dist(G, source, time_attr="travel_time", dist_attr="length
 
     return best
 
-def build_dense_tt_td_parallel(graph, key_nodes, time_attr="travel_time", dist_attr="length",
-                               max_workers=2, chunksize=4, TT_filepath = "TT.dat", TD_filepath = "TD.dat"):
-    key_nodes = list(key_nodes)
-    n = len(key_nodes)
-    node_to_idx = {node: i for i, node in enumerate(key_nodes)}
-
-    BIG_T = np.float32(1e9)
-    BIG_D = np.float32(1e9)
-
-    TT = np.memmap(TT_filepath, dtype=np.float32, mode="w+", shape=(n, n))
-    TD = np.memmap(TD_filepath, dtype=np.float32, mode="w+", shape=(n, n))
-    TT[:] = BIG_T
-    TD[:] = BIG_D
-
-    tasks = [(i, u, node_to_idx, key_nodes, BIG_T, BIG_D) for i, u in enumerate(key_nodes)]
-
-    with ProcessPoolExecutor(
-        max_workers=max_workers,
-        initializer=init_worker,
-        initargs=(graph, time_attr, dist_attr),
-    ) as ex:
-        futures = [ex.submit(compute_row, task) for task in tasks]
-
-        for fut in tqdm(as_completed(futures), total=len(futures), desc="[Graph] Rows"):
-            i, tt_row, td_row = fut.result()   # will re-raise worker exceptions here
-            TT[i, :] = tt_row
-            TD[i, :] = td_row
-
-    TT.flush(); TD.flush()
-    return node_to_idx, TT, TD
-
-class travel_metrics:
-    def __init__(self):
-        self.node_to_idx=None
-        self.TT = None
-        self.TD = None
-    
+class travel_metrics():
+    def __init__(self, graph, city, cache_dir_name = "travelmetrics", ram_storage=50, mmap_files=False):
+        self.graph =graph
+        PROJECT_ROOT = Path(__file__).resolve().parent  # oder parent.parent wenn nötig
+        CACHE_ROOT = PROJECT_ROOT / cache_dir_name
+        cachepath = CACHE_ROOT / city
+        self.store = SourceFileStoreNPY(graph=graph, cache_dir=cachepath)
+        self.load = TravelMetricsDiskBackedLRU(self.store, ram_storage, mmap_files=mmap_files)
+        
     def get_time(self, u, v):
-        return self.TT[self.node_to_idx[u], self.node_to_idx[v]]
+        return self.load.get_time(u, v)
     
     def get_distance(self, u, v):
-        return self.TD[self.node_to_idx[u], self.node_to_idx[v]]
+        return self.load.get_dist(u, v)
     
-    
-
-    def build_dense_tt_td(self, graph:graph, instances, time_attr="travel_time", dist_attr="length", max_workers=2, chunksize=1, graph_name = ""):
-        graph_name = graph_name
-        ROOT = Path(__file__).resolve().parent
-        DATA_DIR = Path(ROOT/"data")
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        filename = graph_name + "_nodes.npy"
-        filepath = Path(DATA_DIR/filename)
-        filepath_with_prefix = str(Path(DATA_DIR/graph_name))
-        TT_filepath = filepath_with_prefix+"_TT.dat"
-        TD_filepath = filepath_with_prefix+"_TD.dat"
-        if filepath.exists():
-            print(f"found a tavel_time file for {graph_name}, loading into memory")
-            node_to_idx, TT, TD, meta = load_travel_cache_memmap(prefix=filepath_with_prefix)
-            
-        else:
-            key_nodes = set()
-            for inst in instances:
-                for r in inst["requests"]:
-                    if r.pickup:
-                        key_nodes.add(r.pickup)
-                    if r.dropoff:
-                        key_nodes.add(r.dropoff)
-                for v in inst["vehicles"]:
-                    key_nodes.add(v.location)
-                for s in inst.get("stations", []):
-                    key_nodes.add(s.location)
-            key_nodes = list(key_nodes)
-            
-            node_to_idx, TT, TD  = build_dense_tt_td_parallel(graph=graph, key_nodes=key_nodes, time_attr=time_attr, dist_attr=dist_attr, max_workers=max_workers, chunksize=chunksize, TD_filepath=TD_filepath, TT_filepath=TT_filepath)
-            save_travel_cache_memmap(prefix=filepath_with_prefix, TT_memmap=TT, TD_memmap=TD, idx_to_node=node_to_idx, meta=graph_name)
-        self.TT = TT
-        self.TD = TD
-        self.node_to_idx = node_to_idx
-            
-        return node_to_idx, TT, TD
-    """BIG_T = np.float32(1e9)
-    BIG_D = np.float32(1e9)
-    key_nodes = set()
-    for inst in instances:
-        for r in inst["requests"]:
-            if r.pickup:
-                key_nodes.add(r.pickup)
-            if r.dropoff:
-                key_nodes.add(r.dropoff)
-        for v in inst["vehicles"]:
-            key_nodes.add(v.location)
-        for s in inst.get("stations", []):
-            key_nodes.add(s.location)
-    key_nodes = list(key_nodes)
-    n = len(key_nodes)
-    node_to_idx = {node: i for i, node in enumerate(key_nodes)}
-
-    TT = np.full((n, n), BIG_T, dtype=np.float32)
-    TD = np.full((n, n), BIG_D, dtype=np.float32)
-
-    for u in tqdm(key_nodes, desc="[Graph] Dijkstra sources"):
-        uidx = node_to_idx[u]
-
-        # Your custom Dijkstra returning {v: (t, d)}
-        lengths = self.dijkstra_time_and_dist(G=graph, source=u, time_attr=time_attr, dist_attr=dist_attr)
-
-        # Fill only columns we care about
-        # (If you really want all N targets, this is still N assignments per row)
-        for v, (t, d) in lengths.items():
-            vidx = node_to_idx.get(v)
-            if vidx is not None:
-                TT[uidx, vidx] = np.float32(t)
-                TD[uidx, vidx] = np.float32(d)
-
-        # Ensure self-distance
-        TT[uidx, uidx] = 0.0
-        TD[uidx, uidx] = 0.0
-        
-    self.TT = TT
-    self.TD = TD
-    self.node_to_idx = node_to_idx
-    
-    return node_to_idx, TT, TD"""
-
-    def build_tt_cache(self, graph, instances, time_attr="travel_time", dist_attr="length"):
-        key_nodes = set()
-        for inst in instances:
-            for r in inst["requests"]:
-                key_nodes.add(r.pickup)
-                key_nodes.add(r.dropoff)
-            for v in inst["vehicles"]:
-                key_nodes.add(v.location)
-            for s in inst.get("stations", []):
-                key_nodes.add(s.location)
-
-        key_nodes = list(key_nodes)
-        n = len(key_nodes)
-        print("unique key nodes:", n, "expected pairs:", n*n)
-
-        tt = {}
-        td = {}
-        BIG = 1e9
-        for u in tqdm(key_nodes, desc="[Graph] Dijkstra sources"):
-            lengths = self.dijkstra_time_and_dist(graph, u, time_attr=time_attr, dist_attr=dist_attr)
-            for v in key_nodes:
-                t, d = lengths.get(v, (BIG, BIG))
-                tt[(u, v)] = t
-                td[(u, v)] = d
-
-        return tt, td
+    def build_cache(self):
+        sources = tqdm(self.graph.nodes, "Generating cache files, 1 to all")
+        for u in sources:
+            self.store.ensure(u)

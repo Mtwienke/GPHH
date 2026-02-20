@@ -26,11 +26,12 @@ from math import inf
 import numpy as np
 from pathlib import Path
 import copy
+from pyproj import Transformer
 
 class GraphManager:
 	def __init__(self, place: Optional[str] = None, 
 		filepath: Optional[str] = None,
-		network_type: str = "drive", graph_folder: str = "graphs", include_buildings = True, include_charging = True, default_speed = 30, max_buildings = 500, max_snap_dist=1000, logger: utils.Logger =None):
+		network_type: str = "drive", graph_folder: str = "graphs", include_buildings = True, include_charging = True, default_speed = 30, max_buildings = 500, max_snap_dist=1000, logger: utils.Logger =None, request_coords = None):
 		self.place = place
 		self.filepath = filepath
 		self.logger = logger
@@ -45,6 +46,8 @@ class GraphManager:
 		self.graph = None
 		self.travelTimeCache = None
 		self.travelDistanceCache = None
+		self.max_taxi_speed = default_speed
+		self.request_coords = request_coords
 
 
 	def log(self, message):
@@ -60,6 +63,8 @@ class GraphManager:
 			self.log(self.add_buildings())
 		if self.includeCharging:
 			self.stations = self.add_charging_stations()
+		if self.request_coords:
+			self.add_request_nodes(self.request_coords)
 		#self.fix_missing_edge_attributes(self.defaultSpeed)
 		# Force all street_count attributes to int type before saving
 		nx.set_node_attributes(
@@ -68,6 +73,7 @@ class GraphManager:
 		#self.graph = ox.distance.add_edge_lengths(self.graph)      # adds 'length' in meters
 		self.graph = ox.routing.add_edge_speeds(self.graph)             # adds 'speed_kph'
 		self.fix_missing_edge_attributes(self.defaultSpeed)
+		self.cap_taxi_speeds(taxi_max_kph=self.max_taxi_speed)
 		self.graph = ox.routing.add_edge_travel_times(self.graph)       # adds 'travel_time' in seconds
 		ox.save_graphml(self.graph, self.filepath)
 		print("Graph CRS:", self.graph.graph["crs"])
@@ -107,6 +113,7 @@ class GraphManager:
 				print("y range:", min(ys), max(ys))
 			print(ox.__version__)
 		
+		
 	def loadGraph(self, filepath=None):
 		if filepath:
 			G = ox.load_graphml(filepath)
@@ -145,7 +152,7 @@ class GraphManager:
 									(self.graph.nodes[v]["x"], self.graph.nodes[v]["y"])]).length
             )
 		
-	def show_graph(self, highlight_buildings=True, highlight_charging=True):
+	def show_graph(self, highlight_buildings=True, highlight_charging=True, highlight_external=True):
 		fig, ax = ox.plot_graph(
 				self.graph,
 				node_size=5,
@@ -174,6 +181,18 @@ class GraphManager:
 				if charging_nodes:
 						cx, cy = zip(*charging_nodes)
 						ax.scatter(cx, cy, c="blue", s=20, marker="s", label="Charging", alpha=0.8)
+		if highlight_external:
+				external_nodes = [
+					(d["x"], d["y"]) 
+					for n, d in self.graph.nodes(data=True) 
+					if str(d.get("requestNode")).lower() in ("true", "1") or d.get("type") == "requestNode"
+				]
+				requests = [n for n, d in self.graph.nodes(data=True) if "requestNode" in d]
+				print(len(external_nodes))
+				print("Num building nodes in show:", len(requests), " or ", len(external_nodes))
+				if external_nodes:
+						bx, by = zip(*external_nodes)
+						ax.scatter(bx, by, c="green", s=12, label="Requests", alpha=0.5)
 					
 		ax.legend()
 		plt.show()
@@ -248,7 +267,37 @@ class GraphManager:
 			
 		print(f"[Graph] Added {len(stations)} charging stations.")
 		return stations
-		
+
+	def snap_requests_to_nodes(self, request_coords):
+		request_nodes = []
+		for _, row in request_coords.iterrows():
+			if "geometry" not in row:
+				continue
+			geom = row.geometry
+			if geom.is_empty:
+				continue
+			
+			# Some are Points, others could be small polygons → use centroid
+			pt = geom.centroid
+			nearest_node = ox.distance.nearest_nodes(self.graph, pt.x, pt.y)
+			
+			# Tag this node as a Request Node
+			self.graph.nodes[nearest_node]["type"] = "requestNode"
+			request_nodes.append(nearest_node)
+		print(f"snapped {len(request_nodes)} Requests to existing nodes")
+		return request_nodes
+	
+	def add_request_nodes(self, coords, showProgress = True, walking_speed_kph=5, crs = "EPSG:4326"):
+		print(f"adding {len(coords)} nodes for reuqests to the map")
+		geoms = [Point(lon, lat) for (lat, lon) in coords]
+		nodes = gpd.GeoDataFrame({"geometry": geoms}, crs=crs)
+		nodes = nodes.to_crs(self.graph.graph["crs"])
+  
+		if nodes.empty:
+			return "[Graph] No buildings found."
+		self.snap_requests_to_nodes(nodes)
+		#self.add_nodes(nodes=nodes, nodeType="requestNode", showProgress=showProgress, walking_speed_kph=walking_speed_kph)
+  
 	def add_buildings(self, showProgress = True, walking_speed_kph = 5):
 		# ---- prepare buildings list ----
 		self.log("[Graph] Fetching buildings...")
@@ -260,10 +309,13 @@ class GraphManager:
 		if len(buildings) > self.maxBuildings:
 			self.log(f"[Graph] Many buildings found, cutting to first {self.maxBuildings} buildings for performance")
 			buildings = buildings.head(self.maxBuildings)
+		self.add_nodes(nodes=buildings, showProgress=showProgress, walking_speed_kph=walking_speed_kph)
+   
+	def add_nodes(self, nodes, nodeType = "building", showProgress = True, walking_speed_kph = 5):
 		crs = self.graph.graph.get("crs")
 		if crs is None:
 			# Assume CRS if no CRS is set
-			self.graph.graph["crs"] = "EPSG:4326"
+			self.graph.graph["crs"] = "EPSG:32632"
 			crs = self.graph.graph["crs"]
 			
 		# Ensure CRS is a pyproj.CRS object
@@ -271,13 +323,13 @@ class GraphManager:
 			crs = pyproj.CRS.from_string(crs)
 			
 		if crs.is_geographic:
-			self.graph = ox.project_graph(self.graph, to_crs="EPSG:3857")
+			self.graph = ox.project_graph(self.graph, to_crs="EPSG:32632")
 			
-		if buildings.crs.is_geographic:
-			buildings = buildings.to_crs(self.graph.graph["crs"])
+		if nodes.crs.is_geographic:
+			nodes = nodes.to_crs(self.graph.graph["crs"])
 			
 		# centroids as Points
-		centroids = buildings.geometry.centroid
+		centroids = nodes.geometry.centroid
 		xs = list(centroids.x)
 		ys = list(centroids.y)
 		
@@ -290,8 +342,13 @@ class GraphManager:
 		
 		# create a lightweight graph for nearest-edge queries
 		G_roads = nx.MultiDiGraph()
+
 		for n, d in self.graph.nodes(data=True):
-			if "building" in d or d.get("type") in ("building", "connection"):
+			#if "building" in d or d.get("type") in ("building", "connection"):
+			#	continue
+			if "x" not in d or "y" not in d:
+				# optional: loggen, um den Übeltäter zu finden
+				# self.log(f"[Graph] Skipping node without x/y: {n} attrs={d}")
 				continue
 			G_roads.add_node(n, **d)
 		for u, v, k, data in self.graph.edges(keys=True, data=True):
@@ -300,7 +357,14 @@ class GraphManager:
 		# ensure CRS metadata is kept for osmnx functions
 		if "crs" in self.graph.graph:
 			G_roads.graph["crs"] = self.graph.graph["crs"]
+		missing = [n for n,d in G_roads.nodes(data=True) if "x" not in d or "y" not in d]
+		if missing:
+			print("missing x/y:", len(missing), "example:", missing[:5])
+			print("attrs example:", G_roads.nodes[missing[0]])
+		bad = [n for n, d in G_roads.nodes(data=True) if "x" not in d or "y" not in d]
+		if bad:
 			
+			raise ValueError(f"G_roads contains {len(bad)} nodes without x/y, e.g. {bad[:5]}")
 		# ---- vectorized nearest-edge lookup (fast) ----
 		# note: ox.distance.nearest_edges supports array inputs in modern osmnx
 		try:
@@ -343,7 +407,7 @@ class GraphManager:
 		next_node_id = max([n for n in self.graph.nodes]) + 1 if len(self.graph.nodes) > 0 and all(isinstance(n, int) for n in self.graph.nodes) else (len(self.graph.nodes) + 1)
 		added_buildings = 0
 		edge_items = list(edge_to_buildings.items())
-		self.log(f"list edge_items hat a length of {len(edge_items)} with values like {edge_items[0]}")
+		#self.log(f"list edge_items hat a length of {len(edge_items)} with values like {edge_items[0]}")
 		if showProgress:
 			edge_items = tqdm(edge_items, desc="[Graph] Splitting edges and adding connections")
 		split_success = 0
@@ -452,7 +516,6 @@ class GraphManager:
 					spd = self.parse_maxspeed(edge_attrs.get("maxspeed"))
 					edge_attrs["speed_kph"] = float(spd if spd is not None else walking_speed_kph)
 
-				self.graph.add_edge(a, b, **edge_attrs)
 				newk = self.graph.add_edge(a, b, **edge_attrs)
 				ed = self.graph[a][b][newk]
 				if "geometry" in ed:
@@ -503,7 +566,7 @@ class GraphManager:
 				bnode = next_node_id
 				next_node_id += 1
 				bpt = Point(xs[b_index], ys[b_index])
-				self.graph.add_node(bnode, x=float(bpt.x), y=float(bpt.y), building=True, type="building")
+				self.graph.add_node(bnode, x=float(bpt.x), y=float(bpt.y), building=True, type=nodeType)
 				
 				# add bidirectional short walk edge
 				dist = float(bpt.distance(attach_point))
@@ -524,8 +587,16 @@ class GraphManager:
 					data["length"] = 1.0
 			if data.get("speed_kph") is None:
 				data["speed_kph"] = 30.0
-				
+		
+		missing = [n for n,d in self.graph.nodes(data=True) if "x" not in d or "y" not in d]
+		if missing:
+			print("missing x/y:", len(missing), "example:", missing[:5])
+			print("attrs example:", self.graph.nodes[missing[0]])
+		else:
+			print("no x/y missing")
+  
 		summary = {"added_buildings": added_buildings, "skipped_far": skipped_far, "edge_groups": len(edge_to_buildings), "skipped for skipped_geom": skipped_geom, "split_success": split_success, "split_exception": split_exception, "bigger_counter": bigger_counter, "GeometryCollectionCounter": GeometryCollectionCounter}
+		print(summary)
 		return summary
 	
 	def parse_maxspeed(self, value):
@@ -544,3 +615,67 @@ class GraphManager:
 			if match:
 				return int(match.group())
 		return None
+
+	def cap_taxi_speeds(self, taxi_max_kph=30.0, speed_attr="speed_kph"):
+		speeds_capped = 0
+		speed_was_none = 0
+		exception_hit = 0
+		for u, v, k, d in self.graph.edges(keys=True, data=True):
+			spd = d.get(speed_attr)
+			if spd is None:
+				speed_was_none += 1
+				continue
+			try:
+				d[speed_attr] = float(min(float(spd), taxi_max_kph))
+				speeds_capped += 1
+			except (TypeError, ValueError):
+				exception_hit += 1
+				pass  # leave it unchanged if it's unparseable
+		print (f"Speeds capped to {taxi_max_kph}: {speeds_capped}, with {speed_was_none} instances of speed being none and {exception_hit} exceptions thrown.")
+
+	def get_nearest_node(self, lat: float, lon: float):
+		"""
+		Return (node_id, (x, y), dist) for the nearest graph node to given WGS84 lat/lon.
+
+		Assumes:
+		- input is WGS84 (EPSG:4326)
+		- graph nodes have x/y in the graph CRS
+		- graph CRS is in self.graph.graph["crs"]
+		"""
+		graph_crs = self.graph.graph.get("crs")
+		if graph_crs is None:
+			raise ValueError('Graph CRS missing: self.graph.graph["crs"] is None')
+
+		# transformer: WGS84 lon/lat -> graph CRS x/y
+		transformer = Transformer.from_crs("EPSG:4326", graph_crs, always_xy=True)
+		x, y = transformer.transform(lon, lat)
+
+		# osmnx expects x,y in the same CRS as the graph
+		node_id = ox.distance.nearest_nodes(self.graph, X=x, Y=y)
+
+		# optional: compute distance (in CRS units, usually meters if projected)
+		node = self.graph.nodes[node_id]
+		nx = float(self.graph.nodes[node_id]["x"])
+		ny = float(self.graph.nodes[node_id]["y"])
+		dist = ((nx - x) ** 2 + (ny - y) ** 2) ** 0.5
+
+		return node_id
+		#return node_id, (x, y), dist
+	def middle_node_from_nodes(self, nodes):
+		"""
+		coords_latlon: list of (lat, lon)
+		returns: node_id (nearest graph node to centroid)
+		"""
+
+		xs, ys = [], []
+		for node_id in nodes:
+			xs.append(self.graph.nodes[node_id]["x"]); ys.append(self.graph.nodes[node_id]["y"])
+
+		cx = sum(xs) / len(xs)
+		cy = sum(ys) / len(ys)
+
+		node_id = ox.distance.nearest_nodes(self.graph, X=cx, Y=cy)
+		nx = float(self.graph.nodes[node_id]["x"])
+		ny = float(self.graph.nodes[node_id]["y"])
+		node = self.graph.nodes[node_id]
+		return node_id

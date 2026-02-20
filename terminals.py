@@ -40,6 +40,7 @@ def ISIR(r, **kwargs):
         return 0
 
 def TVPU(v, r, travel_metrics, **kwargs):
+    #print(f"v.location = {v.location}, r.pickup = {r.pickup}")
     return travel_metrics.get_time(v.location, r.pickup)
 
 def COST(v, r, travel_metrics, t, **kwargs):
@@ -210,16 +211,18 @@ TERMINALS = {
 }
 
 Number = float
-
-def choose_closest_station(vehicle, stations, travel_metrics):
+def choose_closest_station_from_location(location, stations, travel_metrics):
     best_s = None
     best_tt = float("inf")
     for s in stations:
-        tt = travel_metrics.get_time(vehicle.location, s.location)
+        tt = travel_metrics.get_time(location, s.location)
         if tt < best_tt:
             best_tt = tt
             best_s = s
     return best_s, best_tt
+
+def choose_closest_station(vehicle, stations, travel_metrics):
+    return choose_closest_station_from_location(location=vehicle.location, stations=stations, travel_metrics=travel_metrics)
 
 def get_effective_pickup(v, r, stations, travel_metrics):
     if r.request_type == Request_Type.RIDE:
@@ -324,7 +327,7 @@ def evaluate_policy_ast(root: Node, *, travel_metrics, vehicle:Vehicle, request:
     
 def random_terminal(TERMINALS: Dict[str, Callable[..., Number]], p_const=0.2,
                     const_range=(-5.0, 5.0)) -> Node:
-    if random.random() < p_const:
+    if random.random() < 0:
         return ConstNode(random.uniform(*const_range))
     name = random.choice(list(TERMINALS.keys()))
     return TerminalNode(name=name)
