@@ -31,7 +31,7 @@ from pyproj import Transformer
 class GraphManager:
 	def __init__(self, place: Optional[str] = None, 
 		filepath: Optional[str] = None,
-		network_type: str = "drive", graph_folder: str = "graphs", include_buildings = True, include_charging = True, default_speed = 30, max_buildings = 500, max_snap_dist=1000, logger: utils.Logger =None, request_coords = None):
+		network_type: str = "drive", graph_folder: str = "graphs", include_buildings = True, include_charging = True, default_speed = 30, max_buildings = 500, max_snap_dist=1000, logger: utils.Logger =None, request_coords = None, geojson_path=None):
 		self.place = place
 		self.filepath = filepath
 		self.logger = logger
@@ -48,6 +48,7 @@ class GraphManager:
 		self.travelDistanceCache = None
 		self.max_taxi_speed = default_speed
 		self.request_coords = request_coords
+		self.geojson_path = geojson_path
 
 
 	def log(self, message):
@@ -136,7 +137,14 @@ class GraphManager:
 			
 	def downloadBaseGraph(self):
 		self.log(f"[Graph] Downloading graph for {self.place}...")
-		self.graph = ox.graph_from_place(self.place, network_type=self.networkType)
+		if self.geojson_path:
+			gdf = gpd.read_file(self.geojson_path)
+			gdf = gdf.to_crs("EPSG:4326")  # your CRS84 is basically lon/lat like EPSG:4326
+			poly = gdf.geometry.iloc[0]
+			self.poly = poly
+			self.graph = ox.graph_from_polygon(poly, network_type=self.networkType, truncate_by_edge=True, retain_all=False)
+		else:
+			self.graph = ox.graph_from_place(self.place, network_type=self.networkType)
 		# project right away to a local UTM (meters)
 		self.graph = ox.project_graph(self.graph)
 		#self.fix_missing_edge_attributes(self.defaultSpeed)
@@ -244,7 +252,10 @@ class GraphManager:
 			List of charging station node IDs
 		"""
 		# Query charging stations
-		chargers = ox.features_from_place(self.place, tags={"amenity": "charging_station"})
+		if self.poly:
+			chargers = ox.features_from_polygon(self.poly, tags={"amenity": "charging_station"})
+		else:
+			chargers = ox.features_from_place(self.place, tags={"amenity": "charging_station"})
 		
 		# reproject chargers to graph CRS (important!)
 		chargers = chargers.to_crs(self.graph.graph["crs"])
@@ -270,7 +281,9 @@ class GraphManager:
 
 	def snap_requests_to_nodes(self, request_coords):
 		request_nodes = []
-		for _, row in request_coords.iterrows():
+		rows = request_coords.iterrows()
+		rows = tqdm(rows, desc="[Graph] Snapping request to nodes")
+		for _, row in rows:
 			if "geometry" not in row:
 				continue
 			geom = row.geometry
@@ -288,7 +301,7 @@ class GraphManager:
 		return request_nodes
 	
 	def add_request_nodes(self, coords, showProgress = True, walking_speed_kph=5, crs = "EPSG:4326"):
-		print(f"adding {len(coords)} nodes for reuqests to the map")
+		print(f"snapping {len(coords)} nodes for reuqests to the map")
 		geoms = [Point(lon, lat) for (lat, lon) in coords]
 		nodes = gpd.GeoDataFrame({"geometry": geoms}, crs=crs)
 		nodes = nodes.to_crs(self.graph.graph["crs"])
@@ -301,7 +314,11 @@ class GraphManager:
 	def add_buildings(self, showProgress = True, walking_speed_kph = 5):
 		# ---- prepare buildings list ----
 		self.log("[Graph] Fetching buildings...")
-		buildings = ox.features_from_place(self.place, tags={"building": True})
+		if self.poly:
+			buildings = ox.features_from_polygon(polygon=self.poly, tags={"building": True})
+		else:
+			buildings = ox.features_from_place(self.place, tags={"building": True})
+		print(f"Fetched {len(buildings)} buildings.")
 		buildings = buildings.to_crs(self.graph.graph["crs"])
   
 		if buildings.empty:
@@ -346,10 +363,10 @@ class GraphManager:
 		for n, d in self.graph.nodes(data=True):
 			#if "building" in d or d.get("type") in ("building", "connection"):
 			#	continue
-			if "x" not in d or "y" not in d:
+			#if "x" not in d or "y" not in d:
 				# optional: loggen, um den Übeltäter zu finden
 				# self.log(f"[Graph] Skipping node without x/y: {n} attrs={d}")
-				continue
+				#continue
 			G_roads.add_node(n, **d)
 		for u, v, k, data in self.graph.edges(keys=True, data=True):
 			if is_road_edge(data):
@@ -374,7 +391,7 @@ class GraphManager:
 			# fallback: per-point nearest_edges (slower)
 			nearest = [ox.distance.nearest_edges(G_roads, x, y) for x, y in zip(xs, ys)]
 			
-		self.log(f"List for storing nearest edges hat a length of {len(nearest)} with values like {nearest[len(nearest)-1]}")
+		print(f"List for storing nearest edges hat a length of {len(nearest)} with values like {nearest[len(nearest)-1]}")
 		# Build list of candidate attachments (u,v,key, point index)
 		edge_to_buildings = defaultdict(list)
 		skipped_far = 0

@@ -27,6 +27,12 @@ FUNCTIONS = {
 	'min': min,
 	'max': max,
 }
+
+def ISWV(v, **kwargs):
+    if v.id < 0:
+        return 1
+    else:
+        return 0
 def ISCR(r, **kwargs):
     if (r.request_type == Request_Type.CHARGE):
         return 1
@@ -45,23 +51,23 @@ def TVPU(v, r, travel_metrics, **kwargs):
 
 def COST(v, r, travel_metrics, t, **kwargs):
     if r.time_window[1] - t - travel_metrics.get_time(v.location, r.pickup) < 0:
-        return 6000
+        return 30*60*3
     increased_waittime = travel_metrics.get_time(v.location, r.pickup)
     increased_traveldistance = travel_metrics.get_distance(v.location, r.pickup) + travel_metrics.get_distance(r.pickup, r.dropoff)
     
-    return increased_waittime + increased_traveldistance
+    return increased_waittime + 0.12*increased_traveldistance
 
-def DEM(v, r, travel_metrics, **kwargs):
+def DEM(v, r, travel_metrics, **kwargs): #Zeitbedarf: Gesamtdauer, bis wieder frei
     return travel_metrics.get_time(v.location, r.pickup) + travel_metrics.get_time(r.pickup, r.dropoff)
     
-def DUR(v, r, travel_metrics, **kwargs):
+def DUR(v, r, travel_metrics, **kwargs): #Zeit für reine Anfragenbearbeitung
     return travel_metrics.get_time(r.pickup, r.dropoff)
     
 def SLACK(v, r, travel_metrics, t= None, **kwargs):
     return max(r.time_window[1] - t - travel_metrics.get_time(v.location, r.pickup), 0)
     
-def CAP(v, r, **kwargs):
-    return v.capacity
+#def CAP(v, r, **kwargs):
+#    return v.capacity
     
 def RT(v, r, **kwargs):
     return v.charge_level
@@ -79,6 +85,8 @@ def OBV(v, r, vehicles, travel_metrics, t=None, **kwargs):
     best = float("inf")
     for veh in vehicles.values():
         if veh is v:
+            continue
+        if veh.id < 0:
             continue
 
         # wann kann das Fahrzeug frühestens losfahren?
@@ -101,6 +109,8 @@ def LCT(v, r, vehicles, travel_metrics, t=None, **kwargs):
 
     best = float("inf")
     for veh in vehicles.values():
+        if veh.id < 0:
+            continue
 
         # wann kann das Fahrzeug frühestens losfahren?
         available = max(t, veh.busy_until)
@@ -127,6 +137,8 @@ def CRDV(v, r, vehicles, travel_metrics, radius_sec=300, **kwargs):
     for v2 in vehicles.values():
         if v2 is v:
             continue
+        if v2.id < 0:
+            continue
         tt = travel_metrics.get_time(v.location, v2.location)
         if tt <= radius_sec:
             count += 1
@@ -139,6 +151,8 @@ def CRPP(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
 
     count = 0
     for r2 in requests.values():
+        if r2.id < 0:
+            continue
         if r2 is r or r2.pickup == None:
             continue
         tt = travel_metrics.get_time(r.pickup, r2.pickup)
@@ -153,6 +167,8 @@ def CRPD(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
 
     count = 0
     for r2 in requests.values():
+        if r2.id <0:
+            continue
         if r2 is r or r2.dropoff == None:
             continue
         tt = travel_metrics.get_time(r.pickup, r2.dropoff)
@@ -167,6 +183,8 @@ def CRDP(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
 
     count = 0
     for r2 in requests.values():
+        if r2.id <0:
+            continue
         if r2 is r or r2.pickup == None:
             continue
         tt = travel_metrics.get_time(r.dropoff, r2.pickup)
@@ -181,6 +199,8 @@ def CRDD(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
 
     count = 0
     for r2 in requests.values():
+        if r2.id <0:
+            continue
         if r2 is r or r2.dropoff == None:
             continue
         tt = travel_metrics.get_time(r.dropoff, r2.dropoff)
@@ -192,12 +212,13 @@ def CRDD(v, r, requests, travel_metrics, radius_sec=300, **kwargs):
 TERMINALS = {
     'ISCR': ISCR,
     'ISIR': ISIR,
+    'ISWV': ISWV,
 	'TVPU': TVPU,
 	'COST': COST,
 	'DEM': DEM,
 	'DUR': DUR,
 	'SLACK': SLACK,
-	'CAP': CAP,
+	#'CAP': CAP,
 	'RT': RT,
 	'TVC': TVC,
     'AR': AR,

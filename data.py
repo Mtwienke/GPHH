@@ -38,7 +38,7 @@ class Request:
 @dataclass
 class Vehicle:
 	id: int
-	location: Tuple[float, float]
+	location: Optional[Tuple[float, float]]
 	schedule: List[Request] = field(default_factory=list)
 	capacity: int = 3
 	battery_capacity: float = 200.0
@@ -65,18 +65,14 @@ def travel_time(u, v, tm: travel_metrics, phi=0.01, t_service=0):
 def energy_cost(u, v, tm:travel_metrics, beta=0.0005):
 	return beta * tm.get_distance(u, v)
 
-def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, time_horizon=60*60*24, n_chargingStations = 3, seed=42, simulator=None, norming_policy = None):
-	random.seed(seed)
+def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, time_horizon=60*60*24, n_chargingStations = 3, simulator=None, norming_policy = None):
 	print("in generate instances")
 	instances = []
-	print("generating seeds")
-	instance_seeds = random.sample(range(1, 30*n_instances), n_instances)
 	print("getting nodes")
 	nodes = [n for n, d in graph.nodes(data=True) if d.get("building")]
 	range_instances = tqdm(range(n_instances), "Generating instances")
 	for i in range_instances:
-		instance_seed = instance_seeds[i]*seed
-		requests = generate_requests(instance_seed, n_requests=n_requests, nodes=nodes, time_horizon=time_horizon)
+		requests = generate_requests(n_requests=n_requests, nodes=nodes, time_horizon=time_horizon)
 			
 		vehicles = [
 			Vehicle(id=k, location=random.choice(nodes))
@@ -99,7 +95,7 @@ def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, tim
 		instances.append(instance)
 	return instances
 
-def import_instances(graphManager: GraphManager, ext_req_instances: List[List[ExternalRequest]], n_vehicles = 5, time_horizon=60*60*24, n_chargingStations = 3, seed=42, simulator=None, norming_policy = None):
+def import_instances(graphManager: GraphManager, ext_req_instances: List[List[ExternalRequest]], n_vehicles = 5, time_horizon=60*60*24, n_chargingStations = 3, simulator=None, norming_policy = None):
 	instances = []
 	for external_requests in ext_req_instances:
 		requests = []
@@ -138,9 +134,8 @@ def import_instances(graphManager: GraphManager, ext_req_instances: List[List[Ex
 		instances.append(instance)
 	return instances
 
-def generate_requests(seed, n_requests, nodes, time_horizon, full_random=False, work_percent = 50):
+def generate_requests(n_requests, nodes, time_horizon, full_random=False, work_percent = 50):
 	requests = []
-	random.seed(seed)
 	if full_random:
 		for r in range(n_requests):
 			startNode, destinationNode = random.sample(nodes, 2)
@@ -393,3 +388,28 @@ def import_ext_instances(place: str):
 		request_instances.append(requests)
 		request_coords.extend(requests_nodes)
 	return request_coords, request_instances
+
+def add_default_options(instances):
+	for instance in instances:
+		instance["requests"].append(Request(
+			request_type=Request_Type.CHARGE,
+			id=-1,
+			pickup=None,
+			dropoff=None,
+			arrival_time=None,
+			time_window=None,
+			#max_ride_time=max_ride_time
+			))
+		instance["requests"].append(Request(
+				request_type=Request_Type.IDLE,
+				id=-2,
+				pickup=None,
+				dropoff=None,
+				arrival_time=None,
+				time_window=None,
+				#max_ride_time=max_ride_time
+			))
+		instance["vehicles"].append(Vehicle(
+			id = -1,
+			location=None,
+		))

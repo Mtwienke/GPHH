@@ -157,6 +157,11 @@ class Simulator:
                     S.push_event(Event(time=S.time+(30*60), type='request_timeout', payload=rid))
                     if self.log:
                         self.log.log(f"[t={S.time:.1f}] Request {rid} queued (no free vehicle)")
+                elif best_vid < 0:
+                    S.req_rec.start_waiting(req, S.time)
+                    S.push_event(Event(time=S.time+(30*60), type='request_timeout', payload=rid))
+                    if self.log:
+                        self.log.log(f"[t={S.time:.1f}] Request {rid} queued (no free vehicle)")
                 else:
                     # Assign immediately and schedule completion
                     #print(f"assigning request {rid}")
@@ -312,6 +317,8 @@ class Simulator:
         for vid, v in S.fleet.items():
             if v.busy_until > S.time:
                 continue
+            if vid < 0:
+                v.location = req.pickup
             score = evaluate_policy_ast(
                 veh_policy,
                 travel_metrics=self.travel_metrics,
