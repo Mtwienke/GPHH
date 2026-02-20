@@ -77,7 +77,7 @@ class Simulator:
     # -------------------------
     # Public entry point
     # -------------------------
-    def run(self, instance: Dict[str, Any], policy_pair: Tuple[List[str], List[str]], travel_metrics, plot_dir = None) -> float:
+    def run(self, instance: Dict[str, Any], policy_pair: Tuple[List[str], List[str]], travel_metrics=None, plot_dir = None) -> float:
         """
         instance must contain:
           - 'requests': List[Request] with attributes (id, pickup_node, dropoff_node, arrival_time, time_window)
@@ -87,6 +87,8 @@ class Simulator:
         travel_metrics = NetworkX MultiDiGraph (OSMnx) with 'travel_time' on edges
         Returns objective value = total_travel_time + penalty_weight_late * pickup_lateness
         """
+        if travel_metrics == None:
+            travel_metrics = self.travel_metrics
         # Deepcopy to avoid external mutation
         fleet = {v.id: deepcopy(v) for v in instance['vehicles']}
         reqs = {r.id: deepcopy(r) for r in instance['requests']}
