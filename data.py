@@ -152,7 +152,11 @@ def generate_requests(n_requests, nodes, time_horizon, full_random=False, work_p
 			))
 	else:
 		for r in range(int(work_percent*n_requests/200)):
-			homeNode, workNode = random.sample(nodes, 2)
+			perm = nodes[:]
+			random.shuffle(perm)
+			homeNodes, workNodes = perm[(len(nodes)/3):], perm[:(len(nodes)/3)]
+			workNode = random.choice(workNodes)
+			homeNode = random.choice(homeNodes)
 			workway_starttime = numpy.random.normal(7.5*60*60, 30*60)
 			requests.append(Request(
 				request_type=Request_Type.RIDE,

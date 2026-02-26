@@ -96,7 +96,7 @@ class GPEngine:
 			self.logger.log(f"Gen {gen}: Best Fitness = {best.fitness:.4f}")
 
 			
-			new_pop = population[:self.elite_size]
+			new_pop = []
 			"""if gen % 5 == 0:
 				for _ in range(3):  # inject fresh individuals
 					new_pop.append(GPIndividual())"""
