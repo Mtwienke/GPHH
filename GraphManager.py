@@ -160,7 +160,7 @@ class GraphManager:
 									(self.graph.nodes[v]["x"], self.graph.nodes[v]["y"])]).length
             )
 		
-	def show_graph(self, highlight_buildings=True, highlight_charging=True, highlight_external=True):
+	def show_graph(self, highlight_buildings=True, highlight_charging=True, highlight_external=True, save_to:Path=None):
 		fig, ax = ox.plot_graph(
 				self.graph,
 				node_size=5,
@@ -203,6 +203,8 @@ class GraphManager:
 						ax.scatter(bx, by, c="green", s=12, label="Requests", alpha=0.5)
 					
 		ax.legend()
+		if save_to:
+			fig.savefig(save_to)
 		plt.show()
 			
 		

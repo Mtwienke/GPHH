@@ -145,15 +145,17 @@ def call_run(city, n_requests, n_vehicles, logger):
 
 	
 if __name__ == '__main__':
-	main()
+	#main()
 	#G = load_graph(place="Höxter, Germany", add_charging=True, max_buildings= 50000)
 	#logger = utils.Logger()
 	"""json = data.load_external_json("/Users/markuswienkemeier/Coding/GPHH/external_data/pb_nachfragen/pb_2738_0_0.json")
-	request_coords, requests = data.import_ext_instances(place="Paderborn, Germany")
-	manager = GraphManager("Paderborn, Germany", include_charging=True, max_buildings= 500000,request_coords=request_coords, geojson_path="external_data/sicpArea_merged_final.geojson")
+	request_coords, requests = data.import_ext_instances(place="Paderborn, Germany")"""
+	manager = GraphManager("Höxter, Germany", include_charging=True, max_buildings= 500000)#request_coords=request_coords, geojson_path="external_data/sicpArea_merged_final.geojson")
 
 	manager.loadGraph()
-
+	PROJECT_ROOT = Path(__file__).resolve().parent  # oder parent.parent wenn nötig
+	graphdir = PROJECT_ROOT / "graphs"
+	outpath = graphdir / "Höxter_with_requestnodes.png"
 	#manager.add_request_nodes(request_coords)
 	G = manager.graph
-	manager.show_graph()"""
+	manager.show_graph()#"""
