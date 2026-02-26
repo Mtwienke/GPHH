@@ -15,7 +15,7 @@ class Analyser():
         self.req_params = ("20", "50", "200")
         self.veh_params = ("2", "5", "20")
         self.PROJECT_ROOT = Path(__file__).resolve().parent
-        self.results_dir = self.PROJECT_ROOT / "results_1"
+        self.results_dir = self.PROJECT_ROOT / "results"
         self.summary_dir = self.results_dir / "summary"
         self.runsets = [p for p in self.results_dir.iterdir() if p.is_dir() and not p.name.startswith("cross_eval") and not p.name == "summary"]
         self.rel_runs = Path("runs")
@@ -639,7 +639,7 @@ save_df_csv(cross_eval, cross_eval_path.parent / "cross_eval.csv")
 #
 analyser = Analyser()
 #analyser.join_train_files(train_dir="/Users/markuswienkemeier/Coding/GPHH/results/Höxter_v2_r20/runs/phase=train", write_parquet=True, write_csv=True)
-#analyser.ensure_joined_train_files()
+analyser.ensure_joined_train_files()
 #train_file = analyser.joined_train_files_paths[1]
 #train_data = analyser._read_parquet(train_file)
 #analyser.plot_train_norm_mean_std_ln(df = train_data, out_path = Path(train_file).resolve().parent)

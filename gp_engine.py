@@ -33,7 +33,7 @@ class GPIndividual:
 	
 	
 class GPEngine:
-	def __init__(self, travel_metrics, simulator, train_instances, val_instances, city, test_instances, external_instances = None, logger = utils.Logger(), pop_size = 1000):
+	def __init__(self, travel_metrics, simulator, train_instances, val_instances, city, test_instances = None, external_instances = None, logger = utils.Logger(), pop_size = 1000):
 		self.logger = utils.Logger()
 		self.simulator = simulator
 		self.train_instances = train_instances
@@ -83,6 +83,7 @@ class GPEngine:
                 gen=gen,
                 max_workers=max_workers,
                 chunk_size=50,  # with 50 inds, 1 is fine; can try 2-5 later
+                force=True
             )
 
 			population.sort(key=lambda x: x.fitness)
@@ -117,14 +118,7 @@ class GPEngine:
 					print("something strange happened here")
 					
 			population = new_pop
-			
-			fitnesses = [f for f in (ind.fitness for ind in population) if f is not None]
-			if fitnesses:
-				self.logger.log(f"[Gen {gen}] Best: {min(fitnesses):.2f}, Avg: {sum(fitnesses)/len(fitnesses):.2f}, Worst: {max(fitnesses):.2f}")
-			else:
-				self.logger.log(f"[Gen {gen}] No valid individuals this generation.")
-			self.logger.log(f"         Best Veh Policy: {best.veh_policy}")
-			self.logger.log(f"         Best Req Policy: {best.req_policy}")
+			print(f"Population of {len(population)} individuals")
 			
 		print("\\n--- Validating Best Individuals Per Generation ---")
 		evaluate_population_parallel(

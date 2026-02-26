@@ -26,9 +26,9 @@ def set_seed(seed=42):
 	
 def main():
 	set_seed(42)
-	n_generations = 5
-	n_instances = 25
-	n_pop = 10
+	n_generations = 50
+	n_instances = 250
+	n_pop = 1000
 	cities = "Paderborn", "Höxter"
 	Ns_requests = 20, 50#, 200
 	Ns_vehicles = 2, 5#, 20
@@ -71,7 +71,7 @@ def main():
 	#out_path = base_dir / "cross_eval.parquet"
 	cross_eval_all_vs_all_parallel(sim_by_city=simulators, policies=policies, testsets_list=testsets_list, out_dir=base_dir)
 	real_test_dir = RESULT_DIR / "real_instances"
-	test_external(sim_by_city=simulators, policies=policies, out_dir = real_test_dir)
+	test_external(policies=policies, out_dir = real_test_dir)
 
 def cross_eval_all_vs_all_parallel(sim_by_city, policies, testsets_list, out_dir: Path,
                                    max_workers=6):

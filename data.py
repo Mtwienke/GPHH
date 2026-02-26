@@ -66,9 +66,7 @@ def energy_cost(u, v, tm:travel_metrics, beta=0.0005):
 	return beta * tm.get_distance(u, v)
 
 def generate_instances(graph, n_instances=10, n_requests=50, n_vehicles = 5, time_horizon=60*60*24, n_chargingStations = 3, simulator=None, norming_policy = None):
-	print("in generate instances")
 	instances = []
-	print("getting nodes")
 	nodes = [n for n, d in graph.nodes(data=True) if d.get("building")]
 	range_instances = tqdm(range(n_instances), "Generating instances")
 	for i in range_instances:
@@ -154,7 +152,7 @@ def generate_requests(n_requests, nodes, time_horizon, full_random=False, work_p
 		for r in range(int(work_percent*n_requests/200)):
 			perm = nodes[:]
 			random.shuffle(perm)
-			homeNodes, workNodes = perm[(len(nodes)/3):], perm[:(len(nodes)/3)]
+			homeNodes, workNodes = perm[int(len(nodes)/3):], perm[:int(len(nodes)/3)]
 			workNode = random.choice(workNodes)
 			homeNode = random.choice(homeNodes)
 			workway_starttime = numpy.random.normal(7.5*60*60, 30*60)
