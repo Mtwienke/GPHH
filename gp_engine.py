@@ -90,7 +90,9 @@ class GPEngine:
 			best = population[0]
 			if best_per_gen:
 				best_per_gen.append(copy.deepcopy(best))
-				print(f"in if with best_per_gen {best_per_gen}")
+				print("Bests per gen: ")
+				for gen in range(len(best_per_gen)):
+					print(f"Gen {gen}: vehicle policy:  {best_per_gen[gen].veh_policy} --- request policy {best_per_gen[gen].req_policy}")
 			else:
 				best_per_gen = [copy.deepcopy(best)]
 				print(f"in else with best_per_gen {best_per_gen}")
@@ -118,7 +120,6 @@ class GPEngine:
 					print("something strange happened here")
 					
 			population = new_pop
-			print(f"Population of {len(population)} individuals")
 			
 		print("\\n--- Validating Best Individuals Per Generation ---")
 		evaluate_population_parallel(

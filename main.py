@@ -29,9 +29,9 @@ def main():
 	n_generations = 50
 	n_instances = 250
 	n_pop = 1000
-	cities = "Paderborn", "Höxter"
-	Ns_requests = 20, 50#, 200
-	Ns_vehicles = 2, 5#, 20
+	cities = "Höxter", "Paderborn"
+	Ns_requests = 200, 50, 20
+	Ns_vehicles = 20, 5, 2
 	timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 	logger = utils.Logger(filename=f"main from {timestamp}.txt")
 	policies = []
@@ -239,3 +239,9 @@ if __name__ == '__main__':
 	#manager.add_request_nodes(request_coords)
 	G = manager.graph
 	manager.show_graph()#"""
+	"""manager = GraphManager("Paderborn, Germany", include_charging=True, max_buildings= 500000)#request_coords=request_coords, geojson_path="external_data/sicpArea_merged_final.geojson")
+	manager.loadGraph()
+	PROJECT_ROOT = Path(__file__).resolve().parent  # oder parent.parent wenn nötig
+	graphdir = PROJECT_ROOT / "graphs"
+	outpath = graphdir / "Paderborn_with_requestnodes.pdf"
+	manager.show_graph(save_to=outpath)"""

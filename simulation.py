@@ -201,7 +201,7 @@ class Simulator:
         if plot_dir:
             PROJECT_ROOT = Path(__file__).resolve().parent  # oder parent.parent wenn nötig
             LOG_ROOT = PROJECT_ROOT / "logs"
-            timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M]")
+            timestamp = datetime.now().strftime("[%Y-%m-%d %H-%M]")
             gen_dir = safe_subdir(LOG_ROOT, timestamp, "validation", "plots", plot_dir)
             gen_dir.mkdir(parents=True, exist_ok=True)
             export_csv(rec, gen_dir/"segments.csv", gen_dir / "soc.csv")
