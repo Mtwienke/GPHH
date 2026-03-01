@@ -273,7 +273,7 @@ class Analyser():
             train_data = self._read_parquet(filepath)
             out_dir = self.summary_dir.joinpath("train")
             out_dir.mkdir(parents=True, exist_ok=True)
-            self.plot_phase_norm_mean_std_per_gen(df=train_data, out_path=out_dir, run_prefix=run_prefix, phase="train", upper_bound=15, show_n=False)
+            self.plot_phase_norm_mean_std_per_gen(df=train_data, out_path=out_dir, run_prefix=run_prefix, phase="train", upper_bound=None, show_n=False)
             print(run_prefix)
             
     def plot_all_validation(self):
@@ -504,102 +504,117 @@ class Analyser():
         df: pd.DataFrame = None,
         out_dir: str | Path = None,
         score_col: str = "score_norm",
-        policy_cols = ("policy_city", "policy_r", "policy_v"),
-        testset_cols = ("test_city", "test_r", "test_v"),
-        clip_upper: float | None = None,   # e.g. 15.0 if you have error spikes
+        clip_upper: float | None = None,
     ):
         """
-        Cross-eval analysis:
-        1) best policy: lowest average norm score over all test sets (and instances)
-        2) most robust: lowest std dev over all test sets (and instances)
-        3) most flexible: lowest worst testset mean (minimize maximum mean across test sets)
-        4) stacked bars: mean and std split by test set for each policy
-
         Returns:
-          policy_summary_df, per_policy_testset_df, winners_dict
+        policy_summary, per_policy_testset, mean_matrix, winners
         """
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        from pathlib import Path
+
         if not out_dir:
             out_dir = self.summary_dir / "cross_val"
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        
-        if not df:
-            print(self.cross_eval_file)
+
+        if df is None:
             df = self._read_parquet(self.cross_eval_file)
 
         d = df.copy()
 
-        # Filter to cross_eval only if present
+        # phase filter
         if "phase" in d.columns:
             d = d[d["phase"].astype(str) == "cross_eval"].copy()
 
-        # Ensure score numeric
+        # numeric score
         d[score_col] = pd.to_numeric(d[score_col], errors="coerce")
         d = d.dropna(subset=[score_col])
 
-        # Optional clipping of crazy outliers (upper bound)
         if clip_upper is not None:
             d[score_col] = d[score_col].clip(upper=clip_upper)
 
-        # Build readable IDs
-        d["policy_id"] = d[list(policy_cols)].astype(str).agg(" | ".join, axis=1)
-        d["testset_id"] = d[list(testset_cols)].astype(str).agg(" | ".join, axis=1)
+        # --- make r/v numeric (fixes "200 < 50") ---
+        for c in ["policy_r", "policy_v", "test_r", "test_v"]:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
 
-        # ---- Per-policy-per-testset aggregation (this is your item 4 base table) ----
+        d = d.dropna(subset=["policy_city", "policy_r", "policy_v", "test_city", "test_r", "test_v"])
+        d[["policy_r", "policy_v", "test_r", "test_v"]] = d[["policy_r", "policy_v", "test_r", "test_v"]].astype(int)
+
+        # stable readable IDs
+        d["policy_id"] = d["policy_city"].astype(str) + "_v" + d["policy_v"].astype(str) + "_r" + d["policy_r"].astype(str)
+        d["testset_id"] = d["test_city"].astype(str) + "_v" + d["test_v"].astype(str) + "_r" + d["test_r"].astype(str)
+
+        # ---- aggregation per (policy, testset) ----
         per_policy_testset = (
-            d.groupby(["policy_id", "testset_id"])[score_col]
-             .agg(mean="mean", std="std", n="count")
-             .reset_index()
+            d.groupby(["policy_id", "testset_id"], as_index=False)[score_col]
+            .agg(mean="mean", std="std", n="count")
         )
 
-        # Save this table for inspection
+        # add numeric keys (for ordering)
+        keys = (
+            d[["policy_id", "policy_city", "policy_v", "policy_r",
+            "testset_id", "test_city", "test_v", "test_r"]]
+            .drop_duplicates()
+        )
+        per_policy_testset = per_policy_testset.merge(keys, on=["policy_id", "testset_id"], how="left")
+
+        # numeric-stable ordering lists
+        policy_order = (
+            per_policy_testset[["policy_id", "policy_city", "policy_v", "policy_r"]]
+            .drop_duplicates()
+            .sort_values(["policy_city", "policy_v", "policy_r"], kind="mergesort")["policy_id"]
+            .tolist()
+        )
+        testset_order = (
+            per_policy_testset[["testset_id", "test_city", "test_v", "test_r"]]
+            .drop_duplicates()
+            .sort_values(["test_city", "test_v", "test_r"], kind="mergesort")["testset_id"]
+            .tolist()
+        )
+
+        # save long table (sorted)
+        per_policy_testset = per_policy_testset.sort_values(
+            ["policy_city", "policy_v", "policy_r", "test_city", "test_v", "test_r"],
+            kind="mergesort"
+        )
         per_policy_testset.to_csv(out_dir / "per_policy_per_testset.csv", index=False, encoding="utf-8")
 
-        # ---- Policy-level metrics (items 1-3) ----
-        # Average & std across ALL runs across all testsets (run-level pooling)
+        # ---- NEW: mean matrix policy_id x testset_id (values=mean) ----
+        mean_matrix = per_policy_testset.pivot(index="policy_id", columns="testset_id", values="mean")
+        mean_matrix = mean_matrix.reindex(index=policy_order, columns=testset_order)
+        mean_matrix.to_csv(out_dir / "mean_matrix_policy_x_testset.csv", encoding="utf-8")
+
+        # (optional) std matrix too, often useful:
+        std_matrix = per_policy_testset.pivot(index="policy_id", columns="testset_id", values="std")
+        std_matrix = std_matrix.reindex(index=policy_order, columns=testset_order)
+        std_matrix.to_csv(out_dir / "std_matrix_policy_x_testset.csv", encoding="utf-8")
+
+        # ---- policy-level metrics ----
         policy_overall = (
             d.groupby("policy_id")[score_col]
-             .agg(avg_norm_all="mean", std_norm_all="std", n_runs="count")
-             .reset_index()
+            .agg(avg_norm_all="mean", std_norm_all="std", n_runs="count")
+            .reset_index()
         )
-
-        # "Worst test set mean": for each policy, compute mean per testset then take max
         worst_testset = (
             per_policy_testset.groupby("policy_id")["mean"]
             .max()
             .reset_index(name="worst_testset_mean_norm")
         )
-
         policy_summary = policy_overall.merge(worst_testset, on="policy_id", how="left")
-
-        # Winners for (1)-(3)
-        best_policy_id = policy_summary.loc[policy_summary["avg_norm_all"].idxmin(), "policy_id"]
-        most_robust_id = policy_summary.loc[policy_summary["std_norm_all"].idxmin(), "policy_id"]
-        most_flexible_id = policy_summary.loc[policy_summary["worst_testset_mean_norm"].idxmin(), "policy_id"]
-
-        winners = {
-            "best_policy_id": best_policy_id,
-            "most_robust_policy_id": most_robust_id,
-            "most_flexible_policy_id": most_flexible_id,
-        }
-
-        # Save policy summary
         policy_summary.sort_values("avg_norm_all").to_csv(out_dir / "policy_summary.csv", index=False, encoding="utf-8")
 
-        # Also write a tiny winners table
+        # winners
+        winners = {
+            "best_policy_id": policy_summary.loc[policy_summary["avg_norm_all"].idxmin(), "policy_id"],
+            "most_robust_policy_id": policy_summary.loc[policy_summary["std_norm_all"].idxmin(), "policy_id"],
+            "most_flexible_policy_id": policy_summary.loc[policy_summary["worst_testset_mean_norm"].idxmin(), "policy_id"],
+        }
         pd.DataFrame([winners]).to_csv(out_dir / "winners.csv", index=False, encoding="utf-8")
 
-        # ---- Stacked bar charts (means and stds split by test set) ----
-        # Pivot so rows=policy, cols=testset
-        mean_pivot = per_policy_testset.pivot(index="policy_id", columns="testset_id", values="mean").fillna(0.0)
-        std_pivot  = per_policy_testset.pivot(index="policy_id", columns="testset_id", values="std").fillna(0.0)
-
-        # Sort policies by overall avg to make plot readable
-        order = (policy_summary.sort_values("avg_norm_all")["policy_id"]).tolist()
-        mean_pivot = mean_pivot.reindex(order)
-        std_pivot  = std_pivot.reindex(order)
-
-        def _stacked_bar(pivot_df: pd.DataFrame, title: str, ylabel: str, out_path: Path):
+        # ---- plots (optional, keep as before) ----
+        def _stacked_bar(pivot_df, title, ylabel, out_path):
             ax = pivot_df.plot(kind="bar", stacked=True, figsize=(14, 6), width=0.9)
             ax.set_title(title)
             ax.set_xlabel("Policy")
@@ -611,20 +626,19 @@ class Analyser():
             plt.close()
 
         _stacked_bar(
-            mean_pivot,
-            title="Cross-eval: mean normalised score per policy (stacked by test set)",
-            ylabel="Mean score_norm (lower is better)",
-            out_path=out_dir / "stacked_means_by_testset.pdf",
+            mean_matrix.fillna(0.0),
+            "Cross-eval: mean normalised score per policy (stacked by test set)",
+            "Mean score_norm (lower is better)",
+            out_dir / "stacked_means_by_testset.pdf",
         )
-
         _stacked_bar(
-            std_pivot,
-            title="Cross-eval: std dev of normalised score per policy (stacked by test set)",
-            ylabel="Std(score_norm)",
-            out_path=out_dir / "stacked_stds_by_testset.pdf",
+            std_matrix.fillna(0.0),
+            "Cross-eval: std dev of normalised score per policy (stacked by test set)",
+            "Std(score_norm)",
+            out_dir / "stacked_stds_by_testset.pdf",
         )
 
-        return policy_summary, per_policy_testset, winners
+        return policy_summary, per_policy_testset, mean_matrix, winners
     
     def summarise_realistic_instances(self, out_dir: Path | None = None, shard_name: str = "shard=000.parquet"):
         """
@@ -727,92 +741,295 @@ class Analyser():
 
         return summary_df
 
-    def summarise_own_testsets_from_cross_eval(self, 
-        df_cross: pd.DataFrame = None,
+    def analyse_cross_eval(
+        self,
+        df: pd.DataFrame = None,
         out_dir: str | Path = None,
         score_col: str = "score_norm",
-        phase_value: str = "cross_eval",
+        clip_upper: float | None = None,
     ):
         """
-        Filtert aus Crossvalidation nur die 'eigenen' Testsets:
-        policy_city==test_city AND policy_r==test_r AND policy_v==test_v
-
-        Erstellt:
-        1) CSV summary pro Konfiguration (median, mean, std, n)
-        2) Boxplot-Figur: ein Boxplot pro Konfiguration (Verteilung über Instanzen)
-
-        Erwartete Spalten:
-        policy_city, policy_r, policy_v, test_city, test_r, test_v, score_norm
-        optional: phase
+        Returns:
+        policy_summary, per_policy_testset, mean_matrix, winners
         """
-        if not df_cross:
-            df_cross = pd.read_parquet(self.cross_eval_file)
+
         if not out_dir:
             out_dir = self.summary_dir / "cross_val"
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        d = df_cross.copy()
+        if df is None:
+            df = self._read_parquet(self.cross_eval_file)
 
-        # optional auf phase=cross_eval filtern, wenn vorhanden
+        d = df.copy()
+
+        # phase filter
         if "phase" in d.columns:
-            d = d[d["phase"].astype(str) == phase_value].copy()
+            d = d[d["phase"].astype(str) == "cross_eval"].copy()
 
-        # score numerisch
+        # numeric score
         d[score_col] = pd.to_numeric(d[score_col], errors="coerce")
         d = d.dropna(subset=[score_col])
 
-        # eigene Testsets (Diagonal der All-vs-All Matrix)
-        own = d[
-            (d["policy_city"].astype(str) == d["test_city"].astype(str)) &
-            (pd.to_numeric(d["policy_r"], errors="coerce") == pd.to_numeric(d["test_r"], errors="coerce")) &
-            (pd.to_numeric(d["policy_v"], errors="coerce") == pd.to_numeric(d["test_v"], errors="coerce"))
-        ].copy()
+        if clip_upper is not None:
+            d[score_col] = d[score_col].clip(upper=clip_upper)
 
-        if own.empty:
-            raise ValueError("No rows after filtering own testsets. Check column names/values.")
+        # --- make r/v numeric (fixes "200 < 50") ---
+        for c in ["policy_r", "policy_v", "test_r", "test_v"]:
+            d[c] = pd.to_numeric(d[c], errors="coerce")
 
-        # Konfigurations-ID (eine pro Policy/Testset)
-        own["config"] = (
-            own["policy_city"].astype(str) +
-            "_v" + own["policy_v"].astype(str) +
-            "_r" + own["policy_r"].astype(str)
+        d = d.dropna(subset=["policy_city", "policy_r", "policy_v", "test_city", "test_r", "test_v"])
+        d[["policy_r", "policy_v", "test_r", "test_v"]] = d[["policy_r", "policy_v", "test_r", "test_v"]].astype(int)
+
+        # stable readable IDs
+        d["policy_id"] = d["policy_city"].astype(str) + "_v" + d["policy_v"].astype(str) + "_r" + d["policy_r"].astype(str)
+        d["testset_id"] = d["test_city"].astype(str) + "_v" + d["test_v"].astype(str) + "_r" + d["test_r"].astype(str)
+
+        # ---- aggregation per (policy, testset) ----
+        per_policy_testset = (
+            d.groupby(["policy_id", "testset_id"], as_index=False)[score_col]
+            .agg(mean="mean", std="std", n="count")
         )
 
-        # --- Summary (median, mean, std) pro Konfiguration ---
-        summary = (
-            own.groupby("config")[score_col]
-            .agg(
-                n="count",
-                mean="mean",
-                median="median",
-                std="std",
-            )
+        # add numeric keys (for ordering)
+        keys = (
+            d[["policy_id", "policy_city", "policy_v", "policy_r",
+            "testset_id", "test_city", "test_v", "test_r"]]
+            .drop_duplicates()
+        )
+        per_policy_testset = per_policy_testset.merge(keys, on=["policy_id", "testset_id"], how="left")
+
+        # numeric-stable ordering lists
+        policy_order = (
+            per_policy_testset[["policy_id", "policy_city", "policy_v", "policy_r"]]
+            .drop_duplicates()
+            .sort_values(["policy_city", "policy_v", "policy_r"], kind="mergesort")["policy_id"]
+            .tolist()
+        )
+        testset_order = (
+            per_policy_testset[["testset_id", "test_city", "test_v", "test_r"]]
+            .drop_duplicates()
+            .sort_values(["test_city", "test_v", "test_r"], kind="mergesort")["testset_id"]
+            .tolist()
+        )
+
+        # save long table (sorted)
+        per_policy_testset = per_policy_testset.sort_values(
+            ["policy_city", "policy_v", "policy_r", "test_city", "test_v", "test_r"],
+            kind="mergesort"
+        )
+        per_policy_testset.to_csv(out_dir / "per_policy_per_testset.csv", index=False, encoding="utf-8")
+        ppt_pb = per_policy_testset[per_policy_testset["test_city"].astype(str) == "Paderborn"].copy()
+        ppt_hx = per_policy_testset[per_policy_testset["test_city"].astype(str) == "Höxter"].copy()
+
+        ppt_pb.to_csv(out_dir / "per_policy_per_testset_Paderborn.csv", index=False, encoding="utf-8")
+        self.csv_to_latex_table(out_dir / "per_policy_per_testset_Paderborn.csv",out_dir / "per_policy_per_testset_Paderborn.txt")
+        ppt_hx.to_csv(out_dir / "per_policy_per_testset_Hoexter.csv", index=False, encoding="utf-8")
+        self.csv_to_latex_table(out_dir / "per_policy_per_testset_Hoexter.csv",out_dir / "per_policy_per_testset_Hoexter.txt")
+        
+        # ---- NEW: mean matrix policy_id x testset_id (values=mean) ----
+        mean_matrix = per_policy_testset.pivot(index="policy_id", columns="testset_id", values="mean")
+        mean_matrix = mean_matrix.reindex(index=policy_order, columns=testset_order)
+        mean_matrix.to_csv(out_dir / "mean_matrix_policy_x_testset.csv", encoding="utf-8")
+
+        # --- Paderborn ---
+        mean_matrix_pb = ppt_pb.pivot(index="policy_id", columns="testset_id", values="mean")
+
+        testset_order_pb = (
+            ppt_pb[["testset_id", "test_v", "test_r"]]
+            .drop_duplicates()
+            .sort_values(["test_v", "test_r"], kind="mergesort")["testset_id"]
+            .tolist()
+        )
+
+        mean_matrix_pb = mean_matrix_pb.reindex(index=policy_order, columns=testset_order_pb)
+
+        # Spalten umbenennen: testset_id -> "v=.., r=.."
+        rename_pb = (
+            ppt_pb[["testset_id", "test_v", "test_r"]]
+            .drop_duplicates()
+            .set_index("testset_id")
+            .apply(lambda r: f"v={int(r['test_v'])}, r={int(r['test_r'])}", axis=1)
+            .to_dict()
+        )
+        mean_matrix_pb = mean_matrix_pb.rename(columns=rename_pb)
+        mean_matrix_pb.to_csv(out_dir / "mean_matrix_policy_paderborn_testset.csv", encoding="utf-8")
+        self.csv_to_latex_table(
+            out_dir / "mean_matrix_policy_paderborn_testset.csv",
+            out_dir / "mean_matrix_policy_paderborn_testset.txt"
+        )
+
+        # --- Höxter ---
+        mean_matrix_hx = ppt_hx.pivot(index="policy_id", columns="testset_id", values="mean")
+
+        testset_order_hx = (
+            ppt_hx[["testset_id", "test_v", "test_r"]]
+            .drop_duplicates()
+            .sort_values(["test_v", "test_r"], kind="mergesort")["testset_id"]
+            .tolist()
+        )
+
+        mean_matrix_hx = mean_matrix_hx.reindex(index=policy_order, columns=testset_order_hx)
+        rename_hx = (
+            ppt_hx[["testset_id", "test_v", "test_r"]]
+            .drop_duplicates()
+            .set_index("testset_id")
+            .apply(lambda r: f"v={int(r['test_v'])}, r={int(r['test_r'])}", axis=1)
+            .to_dict()
+        )
+        mean_matrix_hx = mean_matrix_hx.rename(columns=rename_hx)
+        mean_matrix_hx.to_csv(out_dir / "mean_matrix_policy_hoexter_testset.csv", encoding="utf-8")
+        self.csv_to_latex_table(
+            out_dir / "mean_matrix_policy_hoexter_testset.csv",
+            out_dir / "mean_matrix_policy_hoexter_testset.txt"
+        )
+
+        # (optional) std matrix too, often useful:
+        std_matrix = per_policy_testset.pivot(index="policy_id", columns="testset_id", values="std")
+        std_matrix = std_matrix.reindex(index=policy_order, columns=testset_order)
+        std_matrix.to_csv(out_dir / "std_matrix_policy_x_testset.csv", encoding="utf-8")
+
+        # ---- policy-level metrics ----
+        policy_overall = (
+            d.groupby("policy_id")[score_col]
+            .agg(avg_norm_all="mean", std_norm_all="std", n_runs="count")
             .reset_index()
-            .sort_values("config")
+        )
+        worst_testset = (
+            per_policy_testset.groupby("policy_id")["mean"]
+            .max()
+            .reset_index(name="worst_testset_mean_norm")
+        )
+        policy_summary = policy_overall.merge(worst_testset, on="policy_id", how="left")
+        policy_summary.sort_values("avg_norm_all").to_csv(out_dir / "policy_summary.csv", index=False, encoding="utf-8")
+
+        # winners
+        winners = {
+            "best_policy_id": policy_summary.loc[policy_summary["avg_norm_all"].idxmin(), "policy_id"],
+            "most_robust_policy_id": policy_summary.loc[policy_summary["std_norm_all"].idxmin(), "policy_id"],
+            "most_flexible_policy_id": policy_summary.loc[policy_summary["worst_testset_mean_norm"].idxmin(), "policy_id"],
+        }
+        pd.DataFrame([winners]).to_csv(out_dir / "winners.csv", index=False, encoding="utf-8")
+
+        # ---- plots (optional, keep as before) ----
+        def _stacked_bar(pivot_df, title, ylabel, out_path):
+            ax = pivot_df.plot(kind="bar", stacked=True, figsize=(14, 6), width=0.9)
+            ax.set_title(title)
+            ax.set_xlabel("Policy")
+            ax.set_ylabel(ylabel)
+            ax.legend(title="Test set", bbox_to_anchor=(1.02, 1), loc="upper left", borderaxespad=0)
+            plt.tight_layout()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(out_path)
+            plt.close()
+
+        _stacked_bar(
+            mean_matrix.fillna(0.0),
+            "Cross-eval: mean normalised score per policy (stacked by test set)",
+            "Mean score_norm (lower is better)",
+            out_dir / "stacked_means_by_testset.pdf",
+        )
+        _stacked_bar(
+            std_matrix.fillna(0.0),
+            "Cross-eval: std dev of normalised score per policy (stacked by test set)",
+            "Std(score_norm)",
+            out_dir / "stacked_stds_by_testset.pdf",
         )
 
-        summary_csv = out_dir / "own_testsets_summary.csv"
-        summary.to_csv(summary_csv, index=False, encoding="utf-8")
+        return policy_summary, per_policy_testset, mean_matrix, winners
+    
+    def split_mean_matrix_by_test_city(self, per_policy_testset: pd.DataFrame,
+                                    out_dir: str | Path | None = None,
+                                    value_col: str = "mean"):
+        """
+        Erwartet per_policy_testset mit Spalten:
+        policy_id, testset_id, mean, test_city, test_v, test_r
+        Gibt zurück:
+        (mat_paderborn, mat_hoexter)
+        """
+        d = per_policy_testset.copy()
 
-        # --- Boxplot: Verteilung score_norm pro Konfiguration ---
-        plt.figure(figsize=(max(10, 0.35 * own["config"].nunique()), 5))
-        ax = sns.boxplot(data=own, x="config", y=score_col)
-        #ax.set_yscale("log")
-        ax.set_ylim(-0.5, 2.5)
-        ax.set_title("Crossvalidation (own testsets): distribution of score_norm per configuration")
-        ax.set_xlabel("Configuration (policy==testset)")
-        ax.set_ylabel(score_col)
-        ax.tick_params(axis="x", rotation=90)
-        ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+        # sicherstellen, dass v/r numerisch sind (für richtige Sortierung)
+        d["test_v"] = pd.to_numeric(d["test_v"], errors="coerce").astype("Int64")
+        d["test_r"] = pd.to_numeric(d["test_r"], errors="coerce").astype("Int64")
 
-        plt.tight_layout()
-        fig_path = out_dir / "own_testsets_boxplot.pdf"
-        plt.savefig(fig_path, dpi=200)
-        plt.close()
+        out_dir = Path(out_dir) if out_dir is not None else None
+        if out_dir is not None:
+            out_dir.mkdir(parents=True, exist_ok=True)
 
-        return summary, own
+        mats = {}
+        for city in ["Paderborn", "Höxter"]:
+            dc = d[d["test_city"].astype(str) == city].copy()
 
+            # Pivot (policy_id × testset_id)
+            mat = dc.pivot(index="policy_id", columns="testset_id", values=value_col)
+
+            # Spaltenreihenfolge: nach v dann r sortieren
+            col_order = (dc[["testset_id","test_v","test_r"]]
+                        .drop_duplicates()
+                        .sort_values(["test_v","test_r"], kind="mergesort")["testset_id"]
+                        .tolist())
+            mat = mat.reindex(columns=col_order)
+
+            # Spaltennamen umbenennen: "v=xx, r=xxx"
+            rename_map = {
+                row["testset_id"]: f"v={int(row['test_v'])}, r={int(row['test_r'])}"
+                for _, row in dc[["testset_id","test_v","test_r"]].drop_duplicates().iterrows()
+            }
+            mat = mat.rename(columns=rename_map)
+
+            mats[city] = mat
+
+            if out_dir is not None:
+                mat.to_csv(out_dir / f"mean_matrix_testcity_{city}.csv", encoding="utf-8")
+
+        return mats["Paderborn"], mats["Höxter"]
+        
+    def csv_to_latex_table(self,
+        csv_path: str | Path,
+        out_tex_path: str | Path | None = None,
+        sep: str = ",",
+        caption: str | None = None,
+        label: str | None = None,
+        index: bool = False,
+        float_format: str | None = "{:.4f}".format,
+        escape: bool = True,
+    ) -> str:
+        """
+        Liest eine CSV und gibt LaTeX-Tabellen-Code aus (kompatibel mit \\begin{tabular}...).
+
+        Parameters
+        ----------
+        csv_path : CSV-Datei
+        out_tex_path : falls gesetzt, wird der LaTeX-Code zusätzlich in diese Datei geschrieben
+        sep : CSV-Trennzeichen
+        caption, label : optional (für table-Umgebung)
+        index : DataFrame-Index mit ausgeben?
+        float_format : Formatierung für floats (z.B. "{:.3f}".format) oder None
+        escape : LaTeX-escapen (True) oder Rohtext (False)
+
+        Returns
+        -------
+        latex_str : str
+            LaTeX-Code zum Einfügen in dein Dokument.
+        """
+        csv_path = Path(csv_path)
+        df = pd.read_csv(csv_path, sep=sep)
+
+        latex = df.to_latex(
+            index=index,
+            caption=caption,
+            label=label,
+            escape=escape,
+            float_format=float_format,
+        )
+
+        if out_tex_path is not None:
+            out_tex_path = Path(out_tex_path)
+            out_tex_path.parent.mkdir(parents=True, exist_ok=True)
+            out_tex_path.write_text(latex, encoding="utf-8")
+
+        return latex
 """
 base_dir = Path("results/Höxter_v5_r200")   # example
 summ_dir = base_dir / "summaries"
@@ -850,9 +1067,11 @@ analyser = Analyser()
 #train_data = analyser._read_parquet(train_file)
 #analyser.plot_train_norm_mean_std_ln(df = train_data, out_path = Path(train_file).resolve().parent)
 #analyser.plot_all_validation()
-#analyser.plot_all_train()
-#policy_summary, per_policy_testset, winners = analyser.analyse_cross_eval()
+analyser.plot_all_train()
+#policy_summary, per_policy_testset, mean_matrix, winners = analyser.analyse_cross_eval()
 #print(winners)
 #analyser.summarise_realistic_instances()
-analyser.summarise_own_testsets_from_cross_eval()
-print("done")
+#analyser.policy_testset_mean_matrix(r"G:\Desktop\GPHH\Programm\GPHH\results_1\summary\cross_val\per_policy_per_testset.csv", r"G:\Desktop\GPHH\Programm\GPHH\results_1\summary\cross_val\mean_matrix.csv")
+#print("done")
+#analyser.split_mean_matrix_by_test_city(per_policy_testset=per_policy_testset, out_dir=r"G:\Desktop\GPHH\Programm\GPHH\results_1\summary\cross_val")
+#analyser.csv_to_latex_table(r"results_1/summary/cross_val/mean_matrix_testcity_Höxter.csv", r"results_1/summary/cross_val/mean_matrix_testcity_Höxter.txt")
