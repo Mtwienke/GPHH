@@ -224,14 +224,21 @@ def load_individuals_from_csv(csv_path: str | Path):
             ind.veh_policy = veh_tree
             ind.fitness = None  # oder aus CSV, falls vorhanden
 
-            individuals[key] = ind
+            
             metadata[key] = {
                 "city": city,
                 "n_requests": n_req,
                 "n_vehicles": n_veh,
             }
-
-    return individuals, metadata
+            individuals.append
+            ({
+                "policy_city": city,
+                "policy_r": n_req,
+                "policy_v": n_veh,
+                "veh_policy": veh_tree,
+                "req_policy": req_tree,
+            })
+    return individuals#, metadata
 
 #os.environ["PATH"] += os.pathsep + r"C:\Users\Markus\Graphviz\bin"
 #export_policy_trees_from_csv(r"G:\Desktop\GPHH\Programm\GPHH\results_1\best_policies.csv", Path(r"G:\Desktop\GPHH\Programm\GPHH\results_1\summary") / "policy_trees_pdf")

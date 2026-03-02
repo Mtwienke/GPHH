@@ -18,6 +18,7 @@ from pathlib import Path
 from tqdm import tqdm
 from cross_eval_parallel import init_worker, eval_pair_and_write
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from PolicyParser import load_individuals_from_csv
 
 def set_seed(seed=42):
 	random.seed(seed)
@@ -223,9 +224,54 @@ def test_external(policies, out_dir: Path):
         })
 		pd.DataFrame(rows).to_parquet(out_path, index=False)
 
-	
+def extracted_cross_val():
+	set_seed(42)
+	n_instances = 500
+	cities = "Höxter", "Paderborn"
+	Ns_requests = 200, 50, 20
+	Ns_vehicles = 20, 5, 2
+	policies = []
+	testsets_list = []
+	simulators = {}
+	norming_policy = generate_norming_policy ()
+	PROJECT_ROOT = Path(__file__).resolve().parent  # oder parent.parent wenn nötig
+	RESULT_DIR = PROJECT_ROOT / "results"
+	timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+	dir_name = f"cross_eval_{timestamp}"
+	base_dir = RESULT_DIR / dir_name
+	best_policies_file = RESULT_DIR / "best_policies.csv"
+
+	policies = load_individuals_from_csv(best_policies_file)
+
+	for city in cities:
+		place = place = city + ", Germany"
+		manager = GraphManager(place=place, include_charging=True, max_buildings= 500000, logger=None, graph_folder="graphs")#, request_coords=request_coords)
+		manager.loadGraph()
+		G = manager.graph
+		tm = travel_metrics(G, city=city)
+		tm.build_cache()
+		sim = Simulator(travel_metrics=tm)
+		simulators[city]=sim
+		for n_req in Ns_requests:
+			for n_veh in Ns_vehicles:
+				test_instances = generate_instances(graph = G, n_instances=n_instances, n_requests=n_req, n_vehicles=n_veh)
+				for instance in test_instances:
+					norm_score=sim.run(instance=instance, policy_pair=norming_policy,travel_metrics=tm)
+					instance['normscore']=norm_score[0]
+				testsets_list.append(test_instances)
+				print("testset for {city} with n_req = {n_req} and n_veh = {n_veh}")
+
+
+	cross_eval_all_vs_all_parallel(sim_by_city=simulators, policies=policies, testsets_list=testsets_list, out_dir=base_dir)
+	real_test_dir = RESULT_DIR / "real_instances"
+	test_external(policies=policies, out_dir = real_test_dir)
+
+
+
+
 if __name__ == '__main__':
-	main()
+	#main()
+	extracted_cross_val()
 	#G = load_graph(place="Höxter, Germany", add_charging=True, max_buildings= 50000)
 	#logger = utils.Logger()
 	"""json = data.load_external_json("/Users/markuswienkemeier/Coding/GPHH/external_data/pb_nachfragen/pb_2738_0_0.json")
