@@ -288,7 +288,77 @@ class Analyser():
             out_dir = self.summary_dir.joinpath("validation")
             out_dir.mkdir(parents=True, exist_ok=True)
             self.plot_phase_norm_mean_std_per_gen(df=val_data, out_path=out_dir, run_prefix=run_prefix, phase="validation", upper_bound=500000)
-    
+
+    def plot_medians_across_configs(self,
+        base_dir: str | Path,
+        out_path: str | Path = None,
+        filename_suffix: str = "mean and error per generation.csv",
+        gen_col_candidates=("gen", "generation"),
+        median_col_candidates=("median", "median(score_norm)", "median_score_norm"),
+    ):
+        """
+        Sucht alle CSVs unter base_dir, deren Dateiname mit filename_suffix endet,
+        liest daraus Generation+Median und plottet alle Konfigurationen zusammen.
+
+        - X: Generation
+        - Y: Median (normalisierte Werte)
+        - Farbe: Konfiguration (aus Dateinamen abgeleitet)
+        """
+        base_dir = Path(base_dir)
+        if not out_path:
+            out_path = self.summary_dir / base_dir.name / "Median_per_gen_and_config.pdf"
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        files = sorted(base_dir.rglob(f"*{filename_suffix}"))
+        if not files:
+            raise FileNotFoundError(f"No files matching '*{filename_suffix}' found under {base_dir}")
+
+        plt.figure(figsize=(10, 5))
+
+        any_plotted = False
+
+        for f in files:
+            df = pd.read_csv(f)
+
+            # finde generation column
+            gen_col = next((c for c in gen_col_candidates if c in df.columns), None)
+            if gen_col is None:
+                raise ValueError(f"{f} has no generation column. Columns: {df.columns.tolist()}")
+
+            # finde median column
+            med_col = next((c for c in median_col_candidates if c in df.columns), None)
+            if med_col is None:
+                raise ValueError(f"{f} has no median column. Columns: {df.columns.tolist()}")
+
+            # numeric cast + sort
+            g = pd.to_numeric(df[gen_col], errors="coerce")
+            m = pd.to_numeric(df[med_col], errors="coerce")
+            tmp = pd.DataFrame({"gen": g, "median": m}).dropna().sort_values("gen")
+
+            if tmp.empty:
+                continue
+
+            # Konfiguration aus Dateiname: alles vor dem Suffix
+            config_name = f.name.replace(filename_suffix, "").rstrip("_ -")
+
+            plt.plot(tmp["gen"], tmp["median"], label=config_name)
+            any_plotted = True
+
+        if not any_plotted:
+            raise ValueError("No usable data plotted (all files empty or missing columns).")
+
+        plt.xlabel("Generation")
+        plt.ylabel("Median (normalised)")
+        plt.yscale("log")
+        plt.title("Median per generation across configurations")
+        plt.grid(True, linestyle="--", alpha=0.4)
+        plt.legend(loc="best", fontsize=8)
+        plt.tight_layout()
+
+        plt.savefig(out_path)
+        plt.close()
+
     def _read_parquet(self, f) -> pd.DataFrame:
         dfi = pd.read_parquet(f)
             #print(dfi["score_total"].max())
@@ -1067,7 +1137,8 @@ analyser = Analyser()
 #train_data = analyser._read_parquet(train_file)
 #analyser.plot_train_norm_mean_std_ln(df = train_data, out_path = Path(train_file).resolve().parent)
 #analyser.plot_all_validation()
-analyser.plot_all_train()
+#analyser.plot_all_train()
+analyser.plot_medians_across_configs(analyser.summary_dir / "train")
 #policy_summary, per_policy_testset, mean_matrix, winners = analyser.analyse_cross_eval()
 #print(winners)
 #analyser.summarise_realistic_instances()
@@ -1075,3 +1146,4 @@ analyser.plot_all_train()
 #print("done")
 #analyser.split_mean_matrix_by_test_city(per_policy_testset=per_policy_testset, out_dir=r"G:\Desktop\GPHH\Programm\GPHH\results_1\summary\cross_val")
 #analyser.csv_to_latex_table(r"results_1/summary/cross_val/mean_matrix_testcity_Höxter.csv", r"results_1/summary/cross_val/mean_matrix_testcity_Höxter.txt")
+
