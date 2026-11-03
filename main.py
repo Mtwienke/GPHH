@@ -19,6 +19,7 @@ from tqdm import tqdm
 from cross_eval_parallel import init_worker, eval_pair_and_write
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from PolicyParser import load_individuals_from_csv
+import time
 
 def set_seed(seed=42):
 	random.seed(seed)
@@ -75,7 +76,7 @@ def main():
 	test_external(policies=policies, out_dir = real_test_dir)
 
 def cross_eval_all_vs_all_parallel(sim_by_city, policies, testsets_list, out_dir: Path,
-                                   max_workers=6):
+                                   max_workers=8):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -184,7 +185,7 @@ def call_run(city, n_requests, n_vehicles, logger, n_generations = 50, n_pop = 1
 
 def test_external(policies, out_dir: Path):
 	for city in ["Paderborn", "Höxter"]:
-		out_path = out_dir / city
+		out_path = out_dir / f"{city}.parquet"
 		place = city + ", Germany"
 		print(f"Testing bests for realistic instances in {place}")
 
@@ -211,17 +212,21 @@ def test_external(policies, out_dir: Path):
 		rows = []
 		for instance in external_instances:
 			for policy in policies:
+				t0 = time.perf_counter()
 				score_total, score_norm = sim.run(instance=instance, policy_pair=(policy["veh_policy"], policy["req_policy"]))
+				dt = time.perf_counter()-t0
 				rows.append({
-            "phase": "real_test",
-            "policy_city": policy["policy_city"],
-            "policy_r": policy["policy_r"],
-            "policy_v": policy["policy_v"],
-            "test_city": city,
-            "instance_id": str(inst_counter),
-            "score_total": float(score_total),
-            "score_norm": float(score_norm),
-        })
+					"phase": "real_test",
+					"policy_city": policy["policy_city"],
+					"policy_r": policy["policy_r"],
+					"policy_v": policy["policy_v"],
+					"test_city": city,
+					"instance_id": str(inst_counter),
+					"score_total": float(score_total),
+					"score_norm": float(score_norm),
+					"runtime_s": float(dt),
+				})
+			inst_counter += 1
 		pd.DataFrame(rows).to_parquet(out_path, index=False)
 
 def extracted_cross_val():
@@ -235,13 +240,15 @@ def extracted_cross_val():
 	simulators = {}
 	norming_policy = generate_norming_policy ()
 	PROJECT_ROOT = Path(__file__).resolve().parent  # oder parent.parent wenn nötig
-	RESULT_DIR = PROJECT_ROOT / "results"
+	RESULT_DIR = PROJECT_ROOT / "results_3"
 	timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 	dir_name = f"cross_eval_{timestamp}"
 	base_dir = RESULT_DIR / dir_name
 	best_policies_file = RESULT_DIR / "best_policies.csv"
 
 	policies = load_individuals_from_csv(best_policies_file)
+	real_test_dir = RESULT_DIR / "real_instances"
+	real_test_dir.mkdir(parents=True, exist_ok=True)
 
 	for city in cities:
 		place = place = city + ", Germany"
@@ -258,20 +265,25 @@ def extracted_cross_val():
 				for instance in test_instances:
 					norm_score=sim.run(instance=instance, policy_pair=norming_policy,travel_metrics=tm)
 					instance['normscore']=norm_score[0]
-				testsets_list.append(test_instances)
-				print("testset for {city} with n_req = {n_req} and n_veh = {n_veh}")
+				testsets_list.append({
+					"test_city": city,
+					"test_r": n_req,
+					"test_v": n_veh,
+					"instances": test_instances,
+				})
+				print(f"testset added for {city} with n_req = {n_req} and n_veh = {n_veh}")
 
 
 	cross_eval_all_vs_all_parallel(sim_by_city=simulators, policies=policies, testsets_list=testsets_list, out_dir=base_dir)
-	real_test_dir = RESULT_DIR / "real_instances"
+	
+	
 	test_external(policies=policies, out_dir = real_test_dir)
 
 
 
 
 if __name__ == '__main__':
-	#main()
-	extracted_cross_val()
+	main()
 	#G = load_graph(place="Höxter, Germany", add_charging=True, max_buildings= 50000)
 	#logger = utils.Logger()
 	"""json = data.load_external_json("/Users/markuswienkemeier/Coding/GPHH/external_data/pb_nachfragen/pb_2738_0_0.json")

@@ -197,10 +197,11 @@ def load_individuals_from_csv(csv_path: str | Path):
     """
     csv_path = Path(csv_path)
 
-    individuals = {}
+    individuals = []
     metadata = {}
 
     with csv_path.open("r", encoding="utf-8", newline="") as f:
+        print("Parsing policies")
         reader = csv.DictReader(f)
         required = {"city", "n_requests", "n_vehicles", "Request_Policy", "Vehicle_Policy"}
         missing_cols = required - set(reader.fieldnames or [])
@@ -230,20 +231,20 @@ def load_individuals_from_csv(csv_path: str | Path):
                 "n_requests": n_req,
                 "n_vehicles": n_veh,
             }
-            individuals.append
-            ({
+            individuals.append({
                 "policy_city": city,
                 "policy_r": n_req,
                 "policy_v": n_veh,
                 "veh_policy": veh_tree,
                 "req_policy": req_tree,
             })
+            print(f"added {len(individuals)} policies in total")
     return individuals#, metadata
 
 #os.environ["PATH"] += os.pathsep + r"C:\Users\Markus\Graphviz\bin"
-#export_policy_trees_from_csv(r"G:\Desktop\GPHH\Programm\GPHH\results_1\best_policies.csv", Path(r"G:\Desktop\GPHH\Programm\GPHH\results_1\summary") / "policy_trees_pdf")
+export_policy_trees_from_csv("/Users/markuswienkemeier/Coding/GPHH/results_3/best_policies.csv", Path("/Users/markuswienkemeier/Coding/GPHH/results_3/summary") / "policy_trees_pdf")
 
-inds, meta = load_individuals_from_csv(r"G:\Desktop\GPHH\Programm\GPHH\results_1\best_policies.csv")
-print(inds["Paderborn,20,2"].veh_policy)
-print(inds["Paderborn,20,2"].req_policy)
-print(meta)
+#inds, meta = load_individuals_from_csv(r"G:\Desktop\GPHH\Programm\GPHH\results_1\best_policies.csv")
+#print(inds["Paderborn,20,2"].veh_policy)
+#print(inds["Paderborn,20,2"].req_policy)
+#print(meta)

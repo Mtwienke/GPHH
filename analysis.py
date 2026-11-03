@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.pyplot as plt
 import re
+import matplotlib.lines as mlines
 
 #PHASES = ("train", "validation", "test", "real", "cross_eval")
 class Analyser():
@@ -15,12 +16,12 @@ class Analyser():
         self.req_params = ("20", "50", "200")
         self.veh_params = ("2", "5", "20")
         self.PROJECT_ROOT = Path(__file__).resolve().parent
-        self.results_dir = self.PROJECT_ROOT.joinpath("results_1")
+        self.results_dir = self.PROJECT_ROOT.joinpath("results_3")
         self.summary_dir = self.results_dir.joinpath("summary")
         print("PROJECT_ROOT:", self.PROJECT_ROOT)
         print("results_dir :", self.results_dir)
         print("exists?     :", self.results_dir.exists())
-        self.runsets = [p for p in self.results_dir.iterdir() if p.is_dir() and not p.name.startswith("cross_eval") and not p.name == "summary"]
+        self.runsets = [p for p in self.results_dir.iterdir() if p.is_dir() and not p.name.startswith("cross_eval") and not p.name == "summary" and not p.name == "real_instances"]
         self.rel_runs = Path("runs")
         self.rel_train = self.rel_runs.joinpath("phase=train")
         self.rel_validaton = self.rel_runs.joinpath("phase=validation")
@@ -31,6 +32,10 @@ class Analyser():
                 None,  # default if nothing found
             )
         self.cross_eval_file = self.first_cross_eval_dir / "cross_eval.parquet"
+        if not self.cross_eval_file.exists():
+            cross_eval_df = self._read_and_normalize_parquet_files(self.first_cross_eval_dir.iterdir())
+            cross_eval_df.to_parquet(self.cross_eval_file)
+            cross_eval_df.to_csv(self.first_cross_eval_dir / "cross_eval.csv")
         self.joined_train_files_paths = self.ensure_joined_train_files()
         
     def ensure_joined_train_files(self):
@@ -83,6 +88,7 @@ class Analyser():
         """
         train_dir = Path(train_dir)
         if not train_dir.exists():
+            print(f"train_dir not found: {train_dir}")
             raise FileNotFoundError(f"train_dir not found: {train_dir}")
 
         gen_dirs = sorted(train_dir.glob("gen=*"))
@@ -287,7 +293,7 @@ class Analyser():
             val_data["gen"] = pd.to_numeric(val_data["gen"], errors="coerce").astype("Int64")
             out_dir = self.summary_dir.joinpath("validation")
             out_dir.mkdir(parents=True, exist_ok=True)
-            self.plot_phase_norm_mean_std_per_gen(df=val_data, out_path=out_dir, run_prefix=run_prefix, phase="validation", upper_bound=500000)
+            self.plot_phase_norm_mean_std_per_gen(df=val_data, out_path=out_dir, run_prefix=run_prefix, phase="validation", upper_bound=None)
 
     def plot_medians_across_configs(self,
         base_dir: str | Path,
@@ -353,12 +359,82 @@ class Analyser():
         plt.yscale("log")
         plt.title("Median per generation across configurations")
         plt.grid(True, linestyle="--", alpha=0.4)
-        plt.legend(loc="best", fontsize=8)
+        plt.legend(loc="upper left", bbox_to_anchor=(1.02, 1), fontsize=8)
         plt.tight_layout()
 
         plt.savefig(out_path)
         plt.close()
 
+
+    def plot_means_across_configs(self,
+            base_dir: str | Path,
+            out_path: str | Path = None,
+            filename_suffix: str = "mean and error per generation.csv",
+            gen_col_candidates=("gen", "generation"),
+            mean_col_candidates=("mean", "mean(score_norm)", "mean_score_norm"),
+        ):
+            """
+            Sucht alle CSVs unter base_dir, deren Dateiname mit filename_suffix endet,
+            liest daraus Generation+Median und plottet alle Konfigurationen zusammen.
+
+            - X: Generation
+            - Y: Mean (normalisierte Werte)
+            - Farbe: Konfiguration (aus Dateinamen abgeleitet)
+            """
+            base_dir = Path(base_dir)
+            if not out_path:
+                out_path = self.summary_dir / base_dir.name / "Mean_per_gen_and_config.pdf"
+            out_path = Path(out_path)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+
+            files = sorted(base_dir.rglob(f"*{filename_suffix}"))
+            if not files:
+                raise FileNotFoundError(f"No files matching '*{filename_suffix}' found under {base_dir}")
+
+            plt.figure(figsize=(10, 5))
+
+            any_plotted = False
+
+            for f in files:
+                df = pd.read_csv(f)
+
+                # finde generation column
+                gen_col = next((c for c in gen_col_candidates if c in df.columns), None)
+                if gen_col is None:
+                    raise ValueError(f"{f} has no generation column. Columns: {df.columns.tolist()}")
+
+                # finde median column
+                med_col = next((c for c in mean_col_candidates if c in df.columns), None)
+                if med_col is None:
+                    raise ValueError(f"{f} has no median column. Columns: {df.columns.tolist()}")
+
+                # numeric cast + sort
+                g = pd.to_numeric(df[gen_col], errors="coerce")
+                m = pd.to_numeric(df[med_col], errors="coerce")
+                tmp = pd.DataFrame({"gen": g, "median": m}).dropna().sort_values("gen")
+
+                if tmp.empty:
+                    continue
+
+                # Konfiguration aus Dateiname: alles vor dem Suffix
+                config_name = f.name.replace(filename_suffix, "").rstrip("_ -")
+
+                plt.plot(tmp["gen"], tmp["median"], label=config_name)
+                any_plotted = True
+
+            if not any_plotted:
+                raise ValueError("No usable data plotted (all files empty or missing columns).")
+
+            plt.xlabel("Generation")
+            plt.ylabel("Mean (normalised)")
+            plt.yscale("log")
+            plt.title("Mean per generation across configurations")
+            plt.grid(True, linestyle="--", alpha=0.4)
+            plt.legend(loc="upper left", bbox_to_anchor=(1.02, 1), fontsize=8)
+            plt.tight_layout()
+
+            plt.savefig(out_path)
+            plt.close()
     def _read_parquet(self, f) -> pd.DataFrame:
         dfi = pd.read_parquet(f)
             #print(dfi["score_total"].max())
@@ -438,13 +514,11 @@ class Analyser():
         plt.savefig(out_path)
         plt.close()"""
         
-    def boxplot_scores(df_phase, metric_col, title, out_path, log_scale=True, clip = True):
+    def boxplot_scores(df_phase, metric_col, title, out_path, log_scale=True):
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        if clip:
-            data = clipped_series(df_phase[metric_col], q=0.99)
-        else:
-            data = df_phase[metric_col].dropna()
+        
+        data = df_phase[metric_col].dropna()
 
         if data.empty:
             print(f"No data for {title}, skipping.")
@@ -552,7 +626,7 @@ class Analyser():
         per_ind = per_individual_std_over_instances(df_phase, metric_col)
         return add_metric_summaries(per_ind, group_cols=["phase", "gen"], metric_col="std_over_instances")
 
-    def save_df_csv(df, out_path, index=False):
+    def save_df_csv(self, df, out_path, index=False):
         """
         Save a DataFrame to CSV (creates parent dirs).
         Writes UTF-8, with ';' optional if you prefer Excel-friendly.
@@ -710,8 +784,8 @@ class Analyser():
 
         return policy_summary, per_policy_testset, mean_matrix, winners
     
-    def summarise_realistic_instances(self, out_dir: Path | None = None, shard_name: str = "shard=000.parquet"):
-        """
+    """def summarise_realistic_instances(self, out_dir: Path | None = None, shard_name: str = "shard=000.parquet"):
+        """"""
         Liest je Runset: <runset>/<self.rel_real>/<shard_name>
         und plottet pro City:
         - x: instance_id
@@ -719,7 +793,7 @@ class Analyser():
         - eine Linie pro Runset derselben City
 
         Zusätzlich: schreibt CSV mit mean score_norm pro (runset, instance_id).
-        """
+        """"""
         if out_dir is None:
             out_dir = self.summary_dir / "realistic"
         out_dir = Path(out_dir)
@@ -809,19 +883,131 @@ class Analyser():
             fig.savefig(out_dir / f"realistic_{city}_score_norm.pdf", dpi=200)
             plt.close(fig)
 
+        return summary_df"""
+       
+    def summarise_realistic_instances(
+        self,
+        data_dir: Path,
+        out_dir: Path | None = None,
+    ):
+        """
+        Reads enriched real parquet files from one directory.
+
+        Expects (minimum) columns:
+        policy_city, policy_r, policy_v,
+        test_city,
+        score_norm,
+        instance_name, sort_key
+
+        Per test_city:
+        - x: instance_name (ordered by sort_key)
+        - y: score_norm
+        - one line per policy configuration
+
+        Writes:
+        - realistic_instances_summary.csv (combined data)
+        - realistic_{city}_score_norm.pdf (one plot per city)
+        """
+        data_dir = Path(data_dir)
+
+        if out_dir is None:
+            out_dir = self.summary_dir / "realistic"
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        all_dfs = []
+
+        for parquet_path in sorted(data_dir.glob("*.parquet")):
+            df = pd.read_parquet(parquet_path)
+
+            required = {
+                "policy_city", "policy_r", "policy_v",
+                "test_city",
+                "score_norm",
+                "instance_name", "sort_key",
+            }
+            missing_cols = required - set(df.columns)
+            if missing_cols:
+                raise ValueError(f"{parquet_path} missing columns: {missing_cols}")
+
+            df = df.copy()
+
+            df["policy_r"] = pd.to_numeric(df["policy_r"], errors="coerce").astype("Int64")
+            df["policy_v"] = pd.to_numeric(df["policy_v"], errors="coerce").astype("Int64")
+            df["sort_key"] = pd.to_numeric(df["sort_key"], errors="coerce")
+            df["score_norm"] = pd.to_numeric(df["score_norm"], errors="coerce")
+
+            df = df.dropna(subset=["policy_r", "policy_v", "sort_key", "score_norm"])
+
+            df["policy_r"] = df["policy_r"].astype(int)
+            df["policy_v"] = df["policy_v"].astype(int)
+            df["instance_name"] = df["instance_name"].astype(str)
+
+            df["policy"] = (
+                df["policy_city"].astype(str)
+                + "_v" + df["policy_v"].astype(str)
+                + "_r" + df["policy_r"].astype(str)
+            )
+
+            all_dfs.append(df)
+
+        if not all_dfs:
+            print("No parquet files found.")
+            return None
+
+        summary_df = pd.concat(all_dfs, ignore_index=True)
+
+        summary_df.to_csv(
+            out_dir / "realistic_instances_summary.csv",
+            index=False,
+            encoding="utf-8",
+        )
+
+        # ---- Plot per city (score_norm only) ----
+        for city, dcity in summary_df.groupby("test_city", sort=True):
+            inst_order = (
+                dcity[["instance_name", "sort_key"]]
+                .drop_duplicates()
+                .sort_values(["sort_key", "instance_name"], kind="mergesort")["instance_name"]
+                .tolist()
+            )
+
+            # If multiple rows per (policy, instance), use mean score_norm
+            agg = (
+                dcity.groupby(["policy", "instance_name"], as_index=False)
+                .agg(score_norm_mean=("score_norm", "mean"))
+            )
+
+            fig, ax = plt.subplots(figsize=(max(10, 0.45 * len(inst_order)), 5))
+
+            for policy, dpol in agg.groupby("policy", sort=True):
+                y = dpol.set_index("instance_name").reindex(inst_order)["score_norm_mean"].values
+                ax.plot(inst_order, y, marker="o", linewidth=1.5, label=policy)
+
+            ax.set_title(f"Realistic instances – score_norm ({city})")
+            ax.set_xlabel("Instance")
+            ax.set_ylabel("score_norm (mean)")
+            ax.set_yscale("log")
+            ax.tick_params(axis="x", labelrotation=90)
+            ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+            ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1), fontsize=8)
+
+            fig.tight_layout()
+            fig.savefig(out_dir / f"realistic_{city}_score_norm.pdf")
+            plt.close(fig)
+
         return summary_df
 
-    def analyse_cross_eval(
+    """def analyse_cross_eval(
         self,
         df: pd.DataFrame = None,
         out_dir: str | Path = None,
         score_col: str = "score_norm",
         clip_upper: float | None = None,
     ):
-        """
+        """"""
         Returns:
-        policy_summary, per_policy_testset, mean_matrix, winners
-        """
+        policy_summary, per_policy_testset, mean_matrix, winners""""""
 
         if not out_dir:
             out_dir = self.summary_dir / "cross_val"
@@ -1006,7 +1192,7 @@ class Analyser():
             out_dir / "stacked_stds_by_testset.pdf",
         )
 
-        return policy_summary, per_policy_testset, mean_matrix, winners
+        return policy_summary, per_policy_testset, mean_matrix, winners"""
     
     def split_mean_matrix_by_test_city(self, per_policy_testset: pd.DataFrame,
                                     out_dir: str | Path | None = None,
@@ -1100,6 +1286,354 @@ class Analyser():
             out_tex_path.write_text(latex, encoding="utf-8")
 
         return latex
+
+    def plot_runtime_boxplots_by_testset_one_figure(self,
+        cross_eval_paths: str | Path | list[str | Path] = None,
+        real_paths: str | Path | list[str | Path] = None,
+        out_dir: str | Path = None,
+        runtime_col: str = "runtime_s",
+    ):
+        """
+        Creates ONE figure with:
+        - 18 boxplots for synthetic testsets (test_city, test_r, test_v)
+        - 2 boxplots for real testsets (test_city)
+
+        Each boxplot shows the distribution of runtime_s aggregated over all policies/instances.
+        """
+        
+        if not cross_eval_paths:
+            cross_eval_paths = self.cross_eval_file
+            
+        if not real_paths:
+            real_paths = list(self.results_dir.glob('real_instances/*.parquet'))
+            
+        if not out_dir:
+            out_dir = self.summary_dir 
+            
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        def _collect_parquets(paths) -> list[Path]:
+            if paths is None:
+                return []
+            if isinstance(paths, (str, Path)):
+                paths = [paths]
+            files = []
+            for p in paths:
+                p = Path(p)
+                if p.is_dir():
+                    files.extend(sorted(p.rglob("*.parquet")))
+                else:
+                    files.append(p)
+            return files
+
+        def _read_all(files: list[Path]) -> pd.DataFrame:
+            dfs = []
+            for f in files:
+                dfi = pd.read_parquet(f)
+                dfi["__file__"] = str(f)
+                dfs.append(dfi)
+            return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+        def _prep_runtime(df: pd.DataFrame) -> pd.DataFrame:
+            if df.empty:
+                return df
+            if runtime_col not in df.columns:
+                raise ValueError(f"Missing '{runtime_col}' in columns: {df.columns.tolist()}")
+            df = df.copy()
+            df[runtime_col] = pd.to_numeric(df[runtime_col], errors="coerce")
+            return df.dropna(subset=[runtime_col])
+
+        # ---------- load ----------
+        df_cross = _prep_runtime(_read_all(_collect_parquets(cross_eval_paths)))
+        df_real  = _prep_runtime(_read_all(_collect_parquets(real_paths)))
+
+        # =========================
+        # FIGURE 1: SYNTHETIC by test_city + test_r + test_v  (18 boxplots)
+        # =========================
+        if not df_cross.empty:
+            needed = {"test_city", "test_r", "test_v", runtime_col}
+            missing = needed - set(df_cross.columns)
+            if missing:
+                raise ValueError(f"Cross-eval missing columns: {missing}. Found: {df_cross.columns.tolist()}")
+
+            dc = df_cross.copy()
+            dc["test_v"] = pd.to_numeric(dc["test_v"], errors="coerce").astype("Int64")
+            dc["test_r"] = pd.to_numeric(dc["test_r"], errors="coerce").astype("Int64")
+            dc = dc.dropna(subset=["test_v", "test_r"])
+            dc["test_v"] = dc["test_v"].astype(int)
+            dc["test_r"] = dc["test_r"].astype(int)
+
+            dc["testset_label"] = (
+                dc["test_city"].astype(str)
+                + " v=" + dc["test_v"].astype(str)
+                + " r=" + dc["test_r"].astype(str)
+            )
+
+            # nice deterministic order: city, then v, then r
+            def _key(lbl: str):
+                m = re.match(r"^(.*)\s+v=(\d+)\s+r=(\d+)$", lbl)
+                if m:
+                    return (m.group(1), int(m.group(2)), int(m.group(3)))
+                return (lbl, 999, 999)
+
+            order = sorted(dc["testset_label"].unique(), key=_key)
+            dc["testset_label"] = pd.Categorical(dc["testset_label"], categories=order, ordered=True)
+
+            plt.figure(figsize=(max(12, 0.55 * len(order)), 5))
+            ax = sns.boxplot(data=dc, x="testset_label", y=runtime_col)
+            ax.set_title("Synthetic: runtime per testset (test_city, test_r, test_v) – aggregated over policies/instances")
+            ax.set_xlabel("Synthetic testset")
+            ax.set_ylabel("runtime_s")
+            ax.set_yscale("log")
+            ax.tick_params(axis="x", rotation=90)
+            ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+            plt.tight_layout()
+            plt.savefig(out_dir / "runtime_synthetic_by_testset.pdf")
+            plt.close()
+
+            dc[["testset_label", runtime_col]].to_csv(
+                out_dir / "runtime_synthetic_by_testset.csv", index=False, encoding="utf-8"
+            )
+        else:
+            print("No cross-eval (synthetic) data found; skipping synthetic plot.")
+
+        # =========================
+        # FIGURE 2: REALISTIC by instance_id (separately per city; 12 + 3 = 15 boxplots)
+        # =========================
+        if not df_real.empty:
+            needed = {"instance_id", runtime_col}
+            missing = needed - set(df_real.columns)
+            if missing:
+                raise ValueError(f"Real data missing columns: {missing}. Found: {df_real.columns.tolist()}")
+
+            dr = df_real.copy()
+
+            # ensure we have city for labeling:
+            if "test_city" not in dr.columns:
+                # fallback: often policy_city == test_city in real runs
+                if "policy_city" in dr.columns:
+                    dr["test_city"] = dr["policy_city"]
+                else:
+                    raise ValueError("Real data missing 'test_city' and no 'policy_city' fallback available.")
+
+            dr["instance_id"] = dr["instance_id"].astype(str)
+
+            # label: "{city} inst={instance_id}"
+            dr["real_instance_label"] = dr["test_city"].astype(str) + " inst=" + dr["instance_id"]
+
+            # order: city first, then instance_id numeric if possible
+            def _real_key(lbl: str):
+                m = re.match(r"^(.*)\s+inst=(\d+)$", lbl)
+                if m:
+                    return (m.group(1), int(m.group(2)))
+                return (lbl, 999999)
+
+            order = sorted(dr["real_instance_label"].unique(), key=_real_key)
+            dr["real_instance_label"] = pd.Categorical(dr["real_instance_label"], categories=order, ordered=True)
+
+            plt.figure(figsize=(max(12, 0.55 * len(order)), 5))
+            ax = sns.boxplot(data=dr, x="real_instance_label", y=runtime_col)
+            ax.set_title("Realistic: runtime per real instance (aggregated over policies)")
+            ax.set_xlabel("Real instance")
+            ax.set_ylabel("runtime_s")
+            ax.set_yscale("log")
+            ax.tick_params(axis="x", rotation=90)
+            ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+            plt.tight_layout()
+            plt.savefig(out_dir / "runtime_real_by_instance.pdf")
+            plt.close()
+
+            dr[["real_instance_label", runtime_col]].to_csv(
+                out_dir / "runtime_real_by_instance.csv", index=False, encoding="utf-8"
+            )
+        else:
+            print("No real data found; skipping real plot.")
+
+        return df_cross, df_real
+
+    def boxplots_own_configuration_from_cross_eval(self,
+        cross_eval_parquet: str | Path,
+        out_path: str | Path,
+        score_col: str = "score_norm",   # or "score_total"
+        clip_upper: float | None = None, # optional, e.g. 15 for score_norm
+        as_pdf: bool = True,
+    ):
+        """
+        Filter rows where:
+        policy_city == test_city
+        policy_r    == test_r
+        policy_v    == test_v
+
+        Then produce one boxplot per configuration (policy_city, policy_v, policy_r)
+        using score_col.
+        """
+        cross_eval_parquet = Path(cross_eval_parquet)
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        df = pd.read_parquet(cross_eval_parquet)
+
+        # optional: ensure we only use cross_eval rows
+        if "phase" in df.columns:
+            df = df[df["phase"].astype(str) == "cross_eval"].copy()
+
+        # numeric casts
+        for c in ["policy_r", "policy_v", "test_r", "test_v"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        df[score_col] = pd.to_numeric(df[score_col], errors="coerce")
+
+        df = df.dropna(subset=["policy_city","test_city","policy_r","policy_v","test_r","test_v", score_col])
+
+        df[["policy_r","policy_v","test_r","test_v"]] = df[["policy_r","policy_v","test_r","test_v"]].astype(int)
+
+        # filter "own config"
+        own = df[
+            (df["policy_city"].astype(str) == df["test_city"].astype(str)) &
+            (df["policy_r"] == df["test_r"]) &
+            (df["policy_v"] == df["test_v"])
+        ].copy()
+
+        if own.empty:
+            raise ValueError("No rows match own-configuration filter. Check your data.")
+
+        if clip_upper is not None:
+            own[score_col] = own[score_col].clip(upper=clip_upper)
+
+        # config label
+        own["config"] = (
+            own["policy_city"].astype(str)
+            + " v=" + own["policy_v"].astype(str)
+            + " r=" + own["policy_r"].astype(str)
+        )
+
+        # stable order: city, then v, then r
+        def _key(lbl: str):
+            m = re.match(r"^(.*)\s+v=(\d+)\s+r=(\d+)$", lbl)
+            if m:
+                return (m.group(1), int(m.group(2)), int(m.group(3)))
+            return (lbl, 999, 999)
+
+        order = sorted(own["config"].unique(), key=_key)
+        own["config"] = pd.Categorical(own["config"], categories=order, ordered=True)
+
+        # plot
+        plt.figure(figsize=(max(12, 0.6 * len(order)), 5))
+        ax = sns.boxplot(data=own, x="config", y=score_col, order=order)
+        ax.set_title(f"Normalised score on test set")
+        ax.set_xlabel("Configuration (policy == testset)")
+        ax.set_ylabel(score_col)
+        ax.set_ylim(-0.1, 2)
+        ax.tick_params(axis="x", rotation=90)
+        ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+
+        plt.tight_layout()
+
+        # choose output format
+        if as_pdf and out_path.suffix.lower() != ".pdf":
+            out_path = out_path.with_suffix(".pdf")
+        plt.savefig(out_path)
+        plt.close()
+
+        # also save filtered data for inspection
+        own_csv = out_path.with_suffix(".csv")
+        own.to_csv(own_csv, index=False, encoding="utf-8")
+
+        return own
+
+import re
+
+DAY = {0:"Mon", 1:"Tue", 2:"Wed", 3:"Thu", 4:"Fri", 5:"Sat", 6:"Sun"}
+DAY_ORDER = {"Mon":0, "Tue":1, "Wed":2, "Thu":3, "Fri":4, "Sat":5, "Sun":6}
+KIND_ORDER = {"avg":0, "max":1}   # avg zuerst
+
+def enrich_real_parquet(
+    in_parquet: str | Path,
+    out_parquet: str | Path,
+    city: str,
+    filenames_in_id_order: list[str],
+    runtime_col: str = "runtime_s",
+):
+    """
+    Adds:
+      - instance_name: human readable label from filename list
+      - sort_key: numeric key for plot ordering
+
+    Assumes instance_id is 1:1 with index in filenames_in_id_order.
+    """
+    in_parquet = Path(in_parquet)
+    out_parquet = Path(out_parquet)
+    out_parquet.parent.mkdir(parents=True, exist_ok=True)
+
+    df = pd.read_parquet(in_parquet).copy()
+
+    if "instance_id" not in df.columns:
+        raise ValueError(f"{in_parquet} missing 'instance_id'. Columns: {df.columns.tolist()}")
+    if runtime_col not in df.columns:
+        raise ValueError(f"{in_parquet} missing '{runtime_col}'. Columns: {df.columns.tolist()}")
+
+    df["instance_id"] = pd.to_numeric(df["instance_id"], errors="coerce").astype("Int64")
+    if df["instance_id"].isna().any():
+        raise ValueError("Some instance_id values could not be converted to int.")
+
+    # Build map id -> filename
+    id_to_fn = {i: fn for i, fn in enumerate(filenames_in_id_order)}
+
+    # Build instance_name + sort_key depending on city
+    names = []
+    keys = []
+
+    if city.lower().startswith("höxter") or city.lower().startswith("hoexter"):
+        # hx_core_<day>_<avg|max>.json
+        rx = re.compile(r"hx_core_(\d)_(avg|max)\.json$")
+        for iid in df["instance_id"].astype(int):
+            fn = id_to_fn.get(iid, f"hx_unknown_{iid}")
+            m = rx.match(fn)
+            if m:
+                day = int(m.group(1))
+                kind = m.group(2)
+                day_name = DAY.get(day, str(day))
+                instance_name = f"Höxter {day_name} {kind}"
+                sort_key = 1000 * DAY_ORDER.get(day_name, 99) + 10 * KIND_ORDER.get(kind, 9)
+            else:
+                instance_name = f"Höxter {fn}"
+                sort_key = 999999
+            names.append(instance_name)
+            keys.append(sort_key)
+
+    elif city.lower().startswith("paderborn"):
+        # pb_<requests>_0_0.json
+        rx = re.compile(r"pb_(\d+)_0_0\.json$")
+        for iid in df["instance_id"].astype(int):
+            fn = id_to_fn.get(iid, f"pb_unknown_{iid}")
+            m = rx.match(fn)
+            if m:
+                req = int(m.group(1))
+                instance_name = f"Paderborn req={req}"
+                sort_key = req  # sortiert nach req
+            else:
+                instance_name = f"Paderborn {fn}"
+                sort_key = 999999999
+            names.append(instance_name)
+            keys.append(sort_key)
+
+    else:
+        # generic fallback
+        for iid in df["instance_id"].astype(int):
+            fn = id_to_fn.get(iid, str(iid))
+            names.append(f"{city} {fn}")
+            keys.append(iid)
+
+    df["instance_name"] = names
+    df["sort_key"] = keys
+    df["test_city"] = city  # falls nicht vorhanden, ist es danach eindeutig
+
+    # optional: sort rows (nicht nötig, aber praktisch)
+    df = df.sort_values(["sort_key", "instance_name"], kind="mergesort")
+
+    df.to_parquet(out_parquet, index=False)
+    return df
+
 """
 base_dir = Path("results/Höxter_v5_r200")   # example
 summ_dir = base_dir / "summaries"
@@ -1129,6 +1663,7 @@ cross_eval = _read_parquet(cross_eval_path)
 save_df_csv(cross_eval, cross_eval_path.parent / "cross_eval.csv")
 """
 
+    
 #
 analyser = Analyser()
 #analyser.join_train_files(train_dir="/Users/markuswienkemeier/Coding/GPHH/results/Höxter_v2_r20/runs/phase=train", write_parquet=True, write_csv=True)
@@ -1138,12 +1673,40 @@ analyser = Analyser()
 #analyser.plot_train_norm_mean_std_ln(df = train_data, out_path = Path(train_file).resolve().parent)
 #analyser.plot_all_validation()
 #analyser.plot_all_train()
-analyser.plot_medians_across_configs(analyser.summary_dir / "train")
+#analyser.plot_medians_across_configs(analyser.summary_dir / "train")
+#analyser.plot_medians_across_configs(analyser.summary_dir / "validation")
+#analyser.plot_means_across_configs(analyser.summary_dir / "train")
+#analyser.plot_means_across_configs(analyser.summary_dir / "validation")
 #policy_summary, per_policy_testset, mean_matrix, winners = analyser.analyse_cross_eval()
 #print(winners)
-#analyser.summarise_realistic_instances()
+analyser.summarise_realistic_instances(data_dir=analyser.results_dir / "real_instances")
 #analyser.policy_testset_mean_matrix(r"G:\Desktop\GPHH\Programm\GPHH\results_1\summary\cross_val\per_policy_per_testset.csv", r"G:\Desktop\GPHH\Programm\GPHH\results_1\summary\cross_val\mean_matrix.csv")
 #print("done")
 #analyser.split_mean_matrix_by_test_city(per_policy_testset=per_policy_testset, out_dir=r"G:\Desktop\GPHH\Programm\GPHH\results_1\summary\cross_val")
 #analyser.csv_to_latex_table(r"results_1/summary/cross_val/mean_matrix_testcity_Höxter.csv", r"results_1/summary/cross_val/mean_matrix_testcity_Höxter.txt")
+#analyser.plot_runtime_boxplots_by_testset_one_figure()
+#analyser.boxplots_own_configuration_from_cross_eval(analyser.cross_eval_file, analyser.summary_dir / "test_boxplots.pdf")
+
+"""hx_files = [
+    "hx_core_3_avg.json","hx_core_2_avg.json","hx_core_1_max.json","hx_core_0_max.json",
+    "hx_core_4_avg.json","hx_core_5_avg.json","hx_core_6_max.json","hx_core_0_avg.json",
+    "hx_core_1_avg.json","hx_core_2_max.json","hx_core_3_max.json","hx_core_6_avg.json",
+    "hx_core_5_max.json","hx_core_4_max.json",
+]
+pb_files = ["pb_1157_0_0.json","pb_375_0_0.json","pb_2738_0_0.json"]
+
+enrich_real_parquet(
+    in_parquet=r"/Users/markuswienkemeier/Coding/GPHH/results_3/real_instances/Höxter.parquet",
+    out_parquet=r"/Users/markuswienkemeier/Coding/GPHH/results_3/real_instances/Höxter.parquet",
+    city="Höxter",
+    filenames_in_id_order=hx_files,
+)
+enrich_real_parquet(
+    in_parquet=r"/Users/markuswienkemeier/Coding/GPHH/results_3/real_instances/Paderborn.parquet",
+    out_parquet=r"/Users/markuswienkemeier/Coding/GPHH/results_3/real_instances/Paderborn.parquet",
+    city="Paderborn",
+    filenames_in_id_order=pb_files,
+)"""
+
+
 

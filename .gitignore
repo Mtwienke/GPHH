@@ -6,3 +6,5 @@ external_data/
 data/
 travelmetrics/
 results_-1/
+results_*/
+.gphhEnv/

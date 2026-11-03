@@ -12,6 +12,11 @@ TERMINAL_NAMES = [
     "ISCR", "ISIR", "ISWV", "TVPU", "COST", "DEM", "DUR", "SLACK", "RT", "TVC",
     "AR", "OBV", "LCT", "CRDV", "CRPP", "CRPD", "CRDP", "CRDD",
 ]
+START_RE = re.compile(
+    r"^-+\s*starting run for\s+(?P<city>.+?)\s+with\s+n_requests\s*=\s*(?P<n_requests>\d+)\s+and\s+n_vehicles\s*=\s*(?P<n_vehicles>\d+)\s*-+"
+)
+REQ_RE = re.compile(r"^Request Policy \(postfix\):\s*(?P<policy>.*)\s*$")
+VEH_RE = re.compile(r"^Vehicle Policy \(postfix\):\s*(?P<policy>.*)\s*$")
 
 TERM_RE = re.compile(r"TerminalNode\(name='([^']+)'\)")
 
@@ -183,5 +188,5 @@ def extract_policies_to_csv(txt_path, csv_path):
 
 
 # Example usage:
-#extract_policies_to_csv(r"G:\Desktop\GPHH\Programm\GPHH\results_1\Terminal Saved Output.txt", r"G:\Desktop\GPHH\Programm\GPHH\results_1\Terminal Saved Output.csv")
-make_terminal_boxplots_request_vs_vehicle(r"G:\Desktop\GPHH\Programm\GPHH\results_1\best_policies.csv", r"G:\Desktop\GPHH\Programm\GPHH\results_1\summary")
+#extract_policies_to_csv(r"/Users/markuswienkemeier/Coding/GPHH/results_3/Terminal Saved Output.txt", r"/Users/markuswienkemeier/Coding/GPHH/results_3/Terminal Saved Output.csv")
+make_terminal_boxplots_request_vs_vehicle(r"/Users/markuswienkemeier/Coding/GPHH/results_3/best_policies.csv", r"/Users/markuswienkemeier/Coding/GPHH/results_3/summary")

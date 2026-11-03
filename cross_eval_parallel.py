@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import pandas as pd
+import time
 
 _SIM_BY_CITY = None
 
@@ -39,12 +40,12 @@ def eval_pair_and_write(payload: dict):
     rows = []
     for k, inst in enumerate(ts["instances"]):
         inst_id = inst.get("id", k)
-
+        t0 = time.perf_counter()
         score_total, score_norm = sim.run(
             inst,
             (p["veh_policy"], p["req_policy"]),
         )
-
+        dt = time.perf_counter()-t0
         rows.append({
             "phase": "cross_eval",
             "run_type": "all_vs_all",
@@ -57,6 +58,7 @@ def eval_pair_and_write(payload: dict):
             "instance_id": str(inst_id),
             "score_total": float(score_total),
             "score_norm": float(score_norm),
+            "runtime_s": float(dt),
         })
 
     pd.DataFrame(rows).to_parquet(out_path, index=False)
